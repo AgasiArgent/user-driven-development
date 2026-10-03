@@ -7,3 +7,7 @@ test-results/
 .env
 .env.*
 !.env.example
+
+demo/public/widget.js
+demo/next-env.d.ts
+*.tsbuildinfo

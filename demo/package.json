@@ -10,7 +10,9 @@
     "migrate": "node scripts/migrate.mjs",
     "test": "vitest run --maxWorkers=2",
     "typecheck": "tsc -p .",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "predev": "npm run build --prefix ../widget && node scripts/copy-widget.mjs",
+    "prebuild": "npm run build --prefix ../widget && node scripts/copy-widget.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -18,7 +20,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "vitest": "^3.2.7"
   },
   "dependencies": {
