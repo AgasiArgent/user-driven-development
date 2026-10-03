@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AgasiArgent/user-driven-development/contracts/feedback-report.schema.json",
+  "title": "Feedback report",
+  "description": "Body of POST <endpoint> sent by the feedback widget. Any backend that implements the intake must accept exactly this shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["comment", "createdAt", "context"],
+  "properties": {
+    "comment": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "user": { "type": "string", "maxLength": 200 },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "tagName"],
+      "properties": {
+        "selector": { "type": "string", "maxLength": 2000 },
+        "tagName": { "type": "string", "maxLength": 50 },
+        "text": { "type": "string", "maxLength": 200 },
+        "rect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        }
+      }
+    },
+    "screenshot": {
+      "description": "PNG as a data URL (data:image/png;base64,...). At most about 2 MB of image data.",
+      "type": "string",
+      "pattern": "^data:image/png;base64,",
+      "maxLength": 2900000
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "maxLength": 2000 },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        },
+        "userAgent": { "type": "string", "maxLength": 500 },
+        "consoleErrors": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "maxLength": 500 }
+        },
+        "failedRequests": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "url", "status"],
+            "properties": {
+              "method": { "type": "string", "maxLength": 10 },
+              "url": { "type": "string", "maxLength": 2000 },
+              "status": { "description": "HTTP status, or 0 for a network error.", "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

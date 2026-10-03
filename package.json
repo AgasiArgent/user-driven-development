@@ -1,0 +1,10 @@
+{
+  "name": "user-driven-development",
+  "private": true,
+  "workspaces": ["widget", "demo"],
+  "scripts": {
+    "build:widget": "npm run build -w widget",
+    "test:unit": "npm test -w widget && npm test -w demo",
+    "test:e2e": "npm run e2e -w demo"
+  }
+}
