@@ -47,7 +47,7 @@ The three most common failure reasons:
 |---|---|
 | The cloud task never appeared within 24 hours | 41 |
 | An existing PR for the issue was not an open draft against the main branch, so the dispatcher stopped | 36 |
-| Caught in the `git add` outage: the changes were applied by hand, and the records were marked failed to prevent duplicate PRs | 13 |
+| Caught in the `git add` outage and marked failed by hand when it ended | 13 |
 
 ## What broke
 
