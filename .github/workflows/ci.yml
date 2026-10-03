@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: udd
+          POSTGRES_PASSWORD: udd
+          POSTGRES_DB: udd
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U udd -d udd"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      DATABASE_URL: postgres://udd:udd@localhost:55432/udd
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Widget — types and unit tests
+        run: npm run typecheck -w widget && npm test -w widget
+      - name: Database migrations
+        run: npm run migrate -w demo
+      - name: Intake tests (real Postgres)
+        run: npm test -w demo
+      - name: Build demo (builds and copies widget.js)
+        run: npm run build -w demo
+      - name: Demo types
+        run: npm run typecheck -w demo
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: demo
+      - name: End-to-end tests
+        run: npm run e2e -w demo
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: demo/test-results

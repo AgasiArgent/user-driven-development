@@ -33,9 +33,46 @@ flowchart TD
 | Coding agent | Claude Code or Codex in Actions | Codex Cloud |
 | Red-first scenario, rework rounds, production verification | No | Yes |
 | You need | A GitHub repository and a model API key | A server, a Linear account, a ChatGPT plan with Codex Cloud |
-| Status | Planned | Planned |
+| Status | Planned (part 2) | Planned (part 3) |
 
 The basic level is meant to be set up from a fork. The full level is the loop from the [case study](docs/case-study.md); it needs infrastructure of your own.
+
+## Run the demo
+
+You need Docker.
+
+```bash
+git clone https://github.com/AgasiArgent/user-driven-development.git
+cd user-driven-development
+docker compose up --build
+```
+
+Open http://localhost:3100 — **Roomly**, a small meeting-room booking app with four [seeded bugs](docs/demo-bugs.md). Press **Feedback** in the bottom-right corner, click the element the problem is about, describe it and send. The report gets an ID like `FB-1` and appears under **My feedback** with the status `received`. It is stored in the `feedback_outbox` table, together with a screenshot and the page context.
+
+Delivering reports onward to an issue tracker and a coding agent is the next part of this repository.
+
+> The demo intake has no authentication and no rate limit. That is fine on localhost and wrong in production.
+
+## Add the widget to your app
+
+```html
+<script src="/widget.js" data-endpoint="/api/feedback" data-user="alice" defer></script>
+```
+
+- `widget.js` is one file with no framework (about 290 KB, most of it the screenshot library). Build it with `npm ci && npm run build:widget`; it lands in `widget/dist/widget.js`.
+- `data-endpoint` is where reports are sent. Your backend accepts the body described in [`contracts/feedback-report.schema.json`](contracts/feedback-report.schema.json) and answers `201 {"id": "...", "status": "received"}`. The demo's implementation is [`demo/lib/feedback.ts`](demo/lib/feedback.ts).
+- `data-user` is optional and is passed through as-is.
+- Each report carries the comment, the pinned element (CSS selector, tag, text, position), a screenshot, and the page context: URL, window size, browser, the last 20 console errors and the last 20 failed requests (method, URL without query string, status — no bodies).
+- Add `data-feedback-mask` to anything that shows personal data: it is painted black on the screenshot. Password fields are always masked.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `widget/` | The feedback widget: TypeScript, no framework, built to one file |
+| `contracts/` | JSON Schema of a feedback report, shared by the widget and any backend |
+| `demo/` | Roomly: Next.js + Postgres demo app, the feedback intake, unit and end-to-end tests |
+| `docs/` | Concept, case study, threat model, seeded bugs |
 
 ## What it costs
 
@@ -53,8 +90,8 @@ In the system described in the case study, 121 of 479 dispatched issues were mar
 
 ## Roadmap
 
-0. Concept, principles, case study — **this release**.
-1. A demo application with a feedback widget (pin, comment, screenshot).
+0. Concept, principles, case study — **done**.
+1. A demo application with a feedback widget (pin, comment, screenshot) — **done**.
 2. The basic level on GitHub Issues and Actions.
 3. The full level: queue, research, Linear, Codex Cloud, red-first scenarios, production verification.
 
