@@ -12,7 +12,7 @@ Examples of what a report could try:
 
 ## Trusted and untrusted reporters
 
-In the system this repository is based on, feedback came from a small group of known testers. That is a much smaller risk than a widget open to every user of a public application.
+In the system this repository is based on, feedback came from a small group of known testers and staff. That is a much smaller risk than a widget open to every user of a public application.
 
 Before you install the loop, decide which of the two you have. Everything below is needed in both cases. With untrusted reporters, also read the last section carefully.
 
@@ -21,7 +21,7 @@ Before you install the loop, decide which of the two you have. Everything below 
 | Mitigation | What it stops | Principle |
 |---|---|---|
 | A human approves every issue before coding | A malicious or bad report reaching the coding agent unseen | [3](concept.md#3-a-human-approves-before-coding) |
-| No-fly zones checked in the dispatcher's code | Automated changes to money, access and regulated logic, whatever the report says | [4](concept.md#4-no-fly-zones-enforced-in-code) |
+| No-fly zones checked in code before coding starts | Automated changes to money and access logic, whatever the report says | [4](concept.md#4-no-fly-zones-enforced-in-code) |
 | The coding agent runs without production access and without production secrets | Reading or changing production data through the agent | [9](concept.md#9-merge-and-deploy-are-not-the-coding-agents-job) |
 | The agent only opens draft PRs; a human merges | A change reaching production without review | [9](concept.md#9-merge-and-deploy-are-not-the-coding-agents-job) |
 | At most 3 rework rounds per issue | Unbounded cost from one report | [6](concept.md#6-bounded-rework-max-3-rounds) |

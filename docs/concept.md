@@ -14,7 +14,7 @@ User pins feedback in the app
   → the reporter checks it                                 (Done, or back to In Progress)
 ```
 
-Each principle below exists because the system broke without it. The linked sections of the [case study](case-study.md) describe what happened.
+Most principles below exist because the system broke without them; where it did, the linked section of the [case study](case-study.md) describes what happened. The rest are design choices made for the same loop.
 
 ## 1. Durable feedback queue
 
@@ -36,9 +36,9 @@ Each principle below exists because the system broke without it. The linked sect
 
 ## 4. No-fly zones enforced in code
 
-**What.** Some areas are never fixed automatically — for example money calculations, access rights, and rules that follow from regulation. The dispatcher checks this in code and refuses; it is not a sentence in the agent's prompt.
+**What.** Some areas are never fixed automatically — for example money calculations and access rights. This is checked in code before any coding starts (in the original system, in the research step); it is not a sentence in the agent's prompt.
 
-**Why.** A prompt instruction can be ignored or overridden by the report text. A check in the dispatcher cannot.
+**Why.** A prompt instruction can be ignored or overridden by the report text. A check in code cannot.
 
 ## 5. Red-first scenario
 
@@ -86,4 +86,4 @@ Each principle below exists because the system broke without it. The linked sect
 
 **What.** Comments, status changes and PRs made by the automation come from a dedicated bot account with only the permissions it needs.
 
-**Why.** In the original system every automated action appeared under the owner's personal account. Nothing showed which actions were automated, and the automation ran with the owner's permissions.
+**Why.** In the original system the automations ran under the owner's personal tracker key. Nothing showed which actions were automated, and the automations had the owner's permissions.
