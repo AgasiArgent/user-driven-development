@@ -29,3 +29,21 @@ describe("buildReport", () => {
     expect(validateReport(report)).toEqual([]);
   });
 });
+
+describe("buildReport — limits and privacy", () => {
+  const capture = { consoleErrors: () => [], failedRequests: () => [] };
+
+  it("drops the query string and fragment from the page URL", () => {
+    window.history.replaceState(null, "", "/reset?token=abc#access_token=xyz");
+    const report = buildReport({ comment: "x", capture, win: window });
+    expect(report.context.url).toBe(`${window.location.origin}/reset`);
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("keeps an over-long user id and page URL within the schema", () => {
+    window.history.replaceState(null, "", "/" + "p".repeat(2500));
+    const report = buildReport({ comment: "x", user: "u".repeat(300), capture, win: window });
+    expect(validateReport(report)).toEqual([]);
+    window.history.replaceState(null, "", "/");
+  });
+});

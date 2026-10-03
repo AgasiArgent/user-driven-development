@@ -16,3 +16,15 @@ describe("describeTarget", () => {
     expect(describeTarget(document.getElementById("long")!).text).toHaveLength(200);
   });
 });
+
+describe("describeTarget — masking", () => {
+  it("leaves masked content out of the element text", () => {
+    document.body.innerHTML = `<div id="row">Customer <span data-feedback-mask>alice@example.com</span> paid</div>`;
+    expect(describeTarget(document.getElementById("row")!).text).toBe("Customer paid");
+  });
+
+  it("sends no text for an element inside a masked area", () => {
+    document.body.innerHTML = `<div data-feedback-mask><b id="b">secret</b></div>`;
+    expect(describeTarget(document.getElementById("b")!)).not.toHaveProperty("text");
+  });
+});

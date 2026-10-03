@@ -114,16 +114,13 @@ export function mountWidget(opts: WidgetOptions): HTMLElement {
       send.disabled = true;
       show(msg, "Sending…", false);
       try {
-        panel.hidden = true;
-        const screenshot = await screenshotOf(target);
-        panel.hidden = false;
+        const screenshot = await screenshotOf(target); // the widget's own host is excluded from the image
         const report = buildReport({ comment: textarea.value, user: opts.user, target, screenshot, capture: opts.capture, win: window });
         const id = await submit(opts.endpoint, report);
         show(msg, `Thank you — your feedback is ${id}.`, false);
         panel.querySelector(".row")!.remove();
         setTimeout(close, 4000);
       } catch (err) {
-        panel.hidden = false;
         show(msg, err instanceof Error ? err.message : "Feedback was not sent. Please try again.", true);
         send.disabled = false;
       }

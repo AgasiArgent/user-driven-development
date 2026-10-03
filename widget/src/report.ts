@@ -1,4 +1,5 @@
 import { describeTarget } from "./target";
+import { cut } from "./text";
 import type { Capture, FeedbackReport } from "./types";
 
 export interface ReportInput {
@@ -16,13 +17,14 @@ export function buildReport(input: ReportInput): FeedbackReport {
   return {
     comment: input.comment.trim(),
     createdAt: new Date().toISOString(),
-    ...(input.user ? { user: input.user } : {}),
+    ...(input.user ? { user: cut(input.user, 200) } : {}),
     ...(input.target ? { target: describeTarget(input.target) } : {}),
     ...(input.screenshot ? { screenshot: input.screenshot } : {}),
     context: {
-      url: win.location.href,
+      // Query string and fragment can carry tokens; the path is enough to find the page.
+      url: cut(win.location.origin + win.location.pathname, 2000),
       viewport: { width: win.innerWidth, height: win.innerHeight },
-      userAgent: win.navigator.userAgent.slice(0, 500),
+      userAgent: cut(win.navigator.userAgent, 500),
       consoleErrors: input.capture.consoleErrors(),
       failedRequests: input.capture.failedRequests(),
     },

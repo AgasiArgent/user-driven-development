@@ -1,3 +1,4 @@
+import { cut } from "./text";
 import type { Capture, FailedRequest } from "./types";
 
 const LIMIT = 20;
@@ -11,15 +12,20 @@ function push<T>(buffer: T[], item: T): void {
 function stripQuery(url: string, base: string): string {
   try {
     const u = new URL(url, base);
-    return u.origin + u.pathname;
+    return cut(u.origin + u.pathname, 2000);
   } catch {
-    return url.split("?")[0];
+    return cut(url.split(/[?#]/)[0], 2000);
   }
 }
 
 function text(value: unknown): string {
   if (value instanceof Error) return value.message;
-  return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value); // circular objects, BigInt
+  }
 }
 
 /**
@@ -29,13 +35,15 @@ function text(value: unknown): string {
 export function installCapture(win: Window & typeof globalThis): Capture & { uninstall(): void } {
   const errors: string[] = [];
   const requests: FailedRequest[] = [];
-  const base = win.location.href;
-  const record = (message: string) => push(errors, message.slice(0, MAX_TEXT));
+  const record = (message: string) => push(errors, cut(message, MAX_TEXT));
 
   const originalError = win.console.error;
   win.console.error = (...args: unknown[]) => {
-    record(args.map(text).join(" "));
-    originalError.apply(win.console, args);
+    try {
+      record(args.map(text).join(" "));
+    } finally {
+      originalError.apply(win.console, args);
+    }
   };
 
   const onError = (e: ErrorEvent) => record(e.message || text(e.error));
@@ -45,8 +53,8 @@ export function installCapture(win: Window & typeof globalThis): Capture & { uni
 
   const originalFetch = win.fetch;
   win.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    const url = stripQuery(input instanceof Request ? input.url : String(input), base);
+    const method = cut((init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase(), 10);
+    const url = stripQuery(input instanceof Request ? input.url : String(input), win.location.href);
     try {
       const response = await originalFetch.call(win, input, init);
       if (response.status >= 400) push(requests, { method, url, status: response.status });
@@ -60,10 +68,12 @@ export function installCapture(win: Window & typeof globalThis): Capture & { uni
   const xhrOpen = win.XMLHttpRequest.prototype.open;
   const xhrSend = win.XMLHttpRequest.prototype.send;
   win.XMLHttpRequest.prototype.open = function (this: XMLHttpRequest & { __udd?: [string, string] }, method: string, url: string | URL, ...rest: unknown[]) {
-    this.__udd = [method.toUpperCase(), stripQuery(String(url), base)];
+    this.__udd = [cut(method.toUpperCase(), 10), stripQuery(String(url), win.location.href)];
     return (xhrOpen as (...a: unknown[]) => void).call(this, method, url, ...rest);
   };
-  win.XMLHttpRequest.prototype.send = function (this: XMLHttpRequest & { __udd?: [string, string] }, body?: Document | XMLHttpRequestBodyInit | null) {
+  win.XMLHttpRequest.prototype.send = function (this: XMLHttpRequest & { __udd?: [string, string]; __uddListening?: boolean }, body?: Document | XMLHttpRequestBodyInit | null) {
+    if (this.__uddListening) return xhrSend.call(this, body);
+    this.__uddListening = true; // one listener per object, even when it is reused
     this.addEventListener("loadend", () => {
       if (this.__udd && (this.status === 0 || this.status >= 400)) {
         push(requests, { method: this.__udd[0], url: this.__udd[1], status: this.status });

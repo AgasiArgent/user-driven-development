@@ -46,3 +46,28 @@ describe("installCapture", () => {
     expect(cap.failedRequests()).toEqual([]);
   });
 });
+
+describe("installCapture — robustness", () => {
+  it("never breaks the app's console.error, even for circular objects", () => {
+    const original = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cap = installCapture(window);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() => console.error("bad", circular, 10n)).not.toThrow();
+    expect(original).toHaveBeenCalledTimes(1);
+    expect(cap.consoleErrors()[0]).toMatch(/^bad /);
+    cap.uninstall();
+    original.mockRestore();
+  });
+
+  it("cuts long messages on a character boundary, never inside an emoji", () => {
+    const silent = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cap = installCapture(window);
+    console.error("a".repeat(499) + "😀😀");
+    const msg = cap.consoleErrors()[0];
+    expect([...msg]).toHaveLength(500);
+    expect(msg.endsWith("😀")).toBe(true);
+    cap.uninstall();
+    silent.mockRestore();
+  });
+});

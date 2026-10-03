@@ -16,3 +16,13 @@ describe("applyMask", () => {
     expect(document.getElementById("plain")!.style.backgroundColor).toBe("");
   });
 });
+
+describe("applyMask — descendants", () => {
+  it("hides child elements that set their own color", () => {
+    document.body.innerHTML = `<div id="m" data-feedback-mask>Card <a id="link" style="color:red">4111 1111</a><img id="img"></div>`;
+    applyMask(document);
+    expect(document.getElementById("link")!.style.visibility).toBe("hidden");
+    expect(document.getElementById("img")!.style.visibility).toBe("hidden");
+    expect(document.getElementById("m")!.style.visibility).not.toBe("hidden");
+  });
+});

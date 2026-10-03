@@ -36,3 +36,18 @@ describe("createSubmitter", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("createSubmitter — timeout", () => {
+  it("gives up after 30 seconds and allows another try", async () => {
+    vi.useFakeTimers();
+    const fetchFn = vi.fn((_url: string, init: RequestInit) =>
+      new Promise<Response>((_, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+    );
+    const submit = createSubmitter(fetchFn as unknown as typeof fetch);
+    const pending = submit("/api/feedback", report);
+    const assertion = expect(pending).rejects.toThrow(/did not answer/);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+    vi.useRealTimers();
+  });
+});

@@ -34,10 +34,11 @@ test("a pinned report is saved once, with a screenshot, and shows up in My feedb
   await expect(page.getByRole("row", { name: new RegExp(id) })).toContainText("received");
 });
 
-test("page styles and widget styles stay separate", async ({ page }) => {
+test("page styles cannot reach the widget, and the widget's styles stay inside it", async ({ page }) => {
   await page.goto("/rooms/1");
-  const pageButton = await page.getByRole("button", { name: "Book", exact: true }).evaluate((el) => getComputedStyle(el).backgroundColor);
-  const widgetButton = await page.getByRole("button", { name: "Feedback" }).evaluate((el) => getComputedStyle(el).backgroundColor);
-  expect(pageButton).toBe("rgb(37, 99, 235)");
-  expect(widgetButton).toBe("rgb(31, 41, 55)");
+  expect(await page.locator("udd-feedback").evaluate((host) => host.shadowRoot !== null)).toBe(true);
+  await page.addStyleTag({ content: "button { background: rgb(255, 0, 0) !important; }" });
+  const bg = (name: string) => page.getByRole("button", { name, exact: true }).evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(await bg("Feedback")).toBe("rgb(31, 41, 55)"); // the widget keeps its own look
+  expect(await bg("Book")).toBe("rgb(255, 0, 0)"); // the hostile rule does apply to the page
 });

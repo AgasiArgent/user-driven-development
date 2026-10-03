@@ -46,6 +46,30 @@ describe("POST /api/feedback", () => {
     expect(res.status).toBe(413);
   });
 
+  it("accepts text with NUL and broken surrogates that Postgres jsonb would reject", async () => {
+    const body = JSON.stringify(report({ comment: "a\u0000b \ud83d tail" }));
+    const res = await handleFeedbackPost(post(body), pool);
+    expect(res.status).toBe(201);
+    const row = (await pool.query("SELECT payload->>'comment' AS c FROM feedback_outbox")).rows[0];
+    expect(row.c).toBe("ab \ufffd tail");
+  });
+
+  it("stops reading a body without Content-Length once it passes 3 MB", async () => {
+    const chunk = new Uint8Array(256 * 1024).fill(97);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += chunk.length;
+        if (pulled > 20 * 1024 * 1024) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const req = new Request("http://x/api/feedback", { method: "POST", body: stream, duplex: "half" } as RequestInit);
+    const res = await handleFeedbackPost(req, pool);
+    expect(res.status).toBe(413);
+    expect(pulled).toBeLessThan(4 * 1024 * 1024);
+  });
+
   it("answers 503 when the database is unavailable", async () => {
     const dead = new pg.Pool({ connectionString: "postgres://udd:udd@localhost:1/udd", connectionTimeoutMillis: 500 });
     const res = await handleFeedbackPost(post(JSON.stringify(report())), dead);
