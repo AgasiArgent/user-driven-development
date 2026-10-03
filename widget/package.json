@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "vitest run --maxWorkers=2"
+    "test": "vitest run --maxWorkers=2",
+    "typecheck": "tsc -p ."
   },
   "devDependencies": {
     "@medv/finder": "^4.0.2",
