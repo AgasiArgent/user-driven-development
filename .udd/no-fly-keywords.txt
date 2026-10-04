@@ -1,0 +1,11 @@
+# Words that mark a no-fly area in a report (principle 4). A report word that starts with one of
+# these gets the label no-auto-fix: a human handles it, the coding agent never sees it.
+payment
+refund
+invoice
+price
+permission
+role
+admin
+password
+login

@@ -27,7 +27,9 @@ const quote = (text: string) => neutralise(text).split("\n").map((l) => `> ${l}`
 // Inside a code span Markdown shows HTML literally, so only backticks, newlines and mentions are handled.
 const code = (text: string) => "`" + text.replace(/`/g, "'").replace(/\s*\n\s*/g, " ").replace(/@/g, "@\u200b") + "`";
 
-export function renderIssue(id: number, p: Payload, publicBaseUrl?: string): NewIssue {
+const BASIC_FOOTER = "Add the label `approved` to let the coding agent work on this. Close it as *not planned* to reject it.";
+
+export function renderIssue(id: number, p: Payload, publicBaseUrl?: string, footer = BASIC_FOOTER): NewIssue {
   const firstLine = p.comment.split("\n")[0].trim();
   // Titles are shown as plain text: only mentions need neutralising.
   const short = Array.from(firstLine).length > 80 ? Array.from(firstLine).slice(0, 79).join("") + "…" : firstLine;
@@ -51,6 +53,6 @@ export function renderIssue(id: number, p: Payload, publicBaseUrl?: string): New
   if (p.context.failedRequests?.length) {
     lines.push("", "### Failed requests", ...p.context.failedRequests.map((r) => `- ${code(`${r.method} ${r.url} → ${r.status || "network error"}`)}`));
   }
-  lines.push("", "---", "Add the label `approved` to let the coding agent work on this. Close it as *not planned* to reject it.");
+  lines.push("", "---", footer);
   return { title, body: lines.join("\n"), labels: ["feedback"] };
 }
