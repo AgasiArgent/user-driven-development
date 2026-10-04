@@ -1,0 +1,20 @@
+{
+  "name": "@udd/full",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "loop": "node --experimental-strip-types src/cli.ts",
+    "test": "vitest run --maxWorkers=1",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.7"
+  }
+}

@@ -4,11 +4,12 @@
   "workspaces": [
     "widget",
     "demo",
-    "delivery"
+    "delivery",
+    "full"
   ],
   "scripts": {
     "build:widget": "npm run build -w widget",
-    "test:unit": "npm test -w widget && npm test -w demo && npm test -w delivery",
+    "test:unit": "npm test -w widget && npm test -w demo && npm test -w delivery && npm test -w full",
     "test:e2e": "npm run e2e -w demo",
     "test:scripts": "node --test scripts/test/*.test.mjs"
   }
