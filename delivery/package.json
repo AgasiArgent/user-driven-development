@@ -1,0 +1,20 @@
+{
+  "name": "@udd/delivery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deliver": "node --experimental-strip-types src/cli.ts",
+    "test": "vitest run --maxWorkers=1",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
