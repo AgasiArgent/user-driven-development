@@ -33,7 +33,7 @@ flowchart TD
 | Coding agent | Claude Code or Codex in Actions | Codex Cloud |
 | Red-first scenario, rework rounds, production verification | No | Yes |
 | You need | A GitHub repository and a model API key | A server, a Linear account, a ChatGPT plan with Codex Cloud |
-| Status | Planned (part 2) | Planned (part 3) |
+| Status | Ready, off by default — [how to turn it on](docs/basic-level.md) | Planned (part 3) |
 
 The basic level is meant to be set up from a fork. The full level is the loop from the [case study](docs/case-study.md); it needs infrastructure of your own.
 
@@ -49,7 +49,7 @@ docker compose up --build
 
 Open http://localhost:3100 — **Roomly**, a small meeting-room booking app with four [seeded bugs](docs/demo-bugs.md). Press **Feedback** in the bottom-right corner, click the element the problem is about, describe it and send. The report gets an ID like `FB-1` and appears under **My feedback** with the status `received`. It is stored in the `feedback_outbox` table, together with a screenshot and the page context.
 
-Delivering reports onward to an issue tracker and a coding agent is the next part of this repository.
+To deliver reports onward to GitHub Issues and a coding agent, see the [basic level](docs/basic-level.md).
 
 > The demo intake has no authentication and no rate limit. That is fine on localhost and wrong in production.
 
@@ -72,7 +72,10 @@ Delivering reports onward to an issue tracker and a coding agent is the next par
 | `widget/` | The feedback widget: TypeScript, no framework, built to one file |
 | `contracts/` | JSON Schema of a feedback report, shared by the widget and any backend |
 | `demo/` | Roomly: Next.js + Postgres demo app, the feedback intake, unit and end-to-end tests |
-| `docs/` | Concept, case study, threat model, seeded bugs |
+| `delivery/` | Basic level: moves reports from the queue into GitHub Issues and mirrors their status back |
+| `.github/workflows/udd-fix.yml` | Basic level: approved issue → coding agent → no-fly check → draft PR |
+| `.udd/no-fly.txt`, `scripts/` | Paths the agent may not change, and the check that enforces it |
+| `docs/` | Concept, case study, threat model, seeded bugs, basic level |
 
 ## What it costs
 
@@ -92,7 +95,7 @@ In the system described in the case study, 121 of 479 dispatched issues were mar
 
 0. Concept, principles, case study — **done**.
 1. A demo application with a feedback widget (pin, comment, screenshot) — **done**.
-2. The basic level on GitHub Issues and Actions.
+2. The basic level on GitHub Issues and Actions — **done** (off by default).
 3. The full level: queue, research, Linear, Codex Cloud, red-first scenarios, production verification.
 
 ## License
