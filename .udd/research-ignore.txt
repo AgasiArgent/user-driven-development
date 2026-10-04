@@ -1,0 +1,5 @@
+# Folders the research step does not search for code references: the loop itself, not the application.
+full/**
+delivery/**
+scripts/**
+.udd/**

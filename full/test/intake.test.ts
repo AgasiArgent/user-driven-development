@@ -13,7 +13,7 @@ afterAll(() => db.end());
 beforeEach(() => db.query("TRUNCATE feedback_outbox RESTART IDENTITY"));
 
 const repo = memoryRepo({ "demo/components/BookingForm.tsx": '<div className="when"><button>Book</button></div>', "demo/lib/feedback.ts": "intake" });
-const rules = { paths: ["demo/lib/feedback.ts"], keywords: ["payment"] };
+const rules = { paths: ["demo/lib/feedback.ts"], keywords: ["payment"], researchIgnore: [] };
 
 async function addReport(comment: string, extra: Record<string, unknown> = {}) {
   const payload = { comment, createdAt: "2026-10-04T10:00:00.000Z", context: { url: "http://localhost:3100/rooms/1" }, target: { selector: ".when > button", tagName: "button", text: "Book" }, user: "alice", ...extra };

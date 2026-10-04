@@ -27,6 +27,26 @@ describe("findCodeRefs", () => {
   });
 });
 
+describe("findCodeRefs — what counts as application code", () => {
+  it("skips test files, which mention everything a report is about", async () => {
+    const r = memoryRepo({
+      "demo/e2e/bugs.spec.ts": "Book .when rooms",
+      "demo/test/x.test.ts": "Book when rooms",
+      "full/test/helpers.ts": "Book when rooms",
+      "demo/components/BookingForm.tsx": '<div className="when"><button>Book</button></div>',
+    });
+    expect((await findCodeRefs(payload, r)).map((x) => x.file)).toEqual(["demo/components/BookingForm.tsx"]);
+  });
+
+  it("ranks the file that renders the element's text above one that only shares words", async () => {
+    const r = memoryRepo({
+      "demo/app/globals.css": ".when { display: flex }\n.rooms {}",
+      "demo/components/BookingForm.tsx": '<div className="when">\n  <button>\n    Book\n  </button>\n</div>',
+    });
+    expect((await findCodeRefs(payload, r))[0].file).toBe("demo/components/BookingForm.tsx");
+  });
+});
+
 describe("fingerprint", () => {
   it("is the same for the same element and page with different ids, case and punctuation", () => {
     const a = fingerprint(payload);
@@ -63,7 +83,7 @@ describe("research", () => {
 });
 
 describe("checkNoFly", () => {
-  const rules = { paths: ["demo/lib/feedback.ts", "contracts/**"], keywords: ["payment", "permission"] };
+  const rules = { paths: ["demo/lib/feedback.ts", "contracts/**"], keywords: ["payment", "permission"], researchIgnore: [] };
 
   it("blocks when a code reference is in a no-fly path", () => {
     expect(checkNoFly(payload, [{ file: "demo/lib/feedback.ts", line: 1, snippet: "" }], rules)).toEqual({ blocked: true, reasons: ["code in no-fly path: demo/lib/feedback.ts"] });

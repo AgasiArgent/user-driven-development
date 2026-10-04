@@ -39,3 +39,8 @@ export async function updateRun(db: pg.Pool, issueId: string, fields: Fields): P
   const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
   await db.query(`UPDATE dispatch_runs SET ${sets}, updated_at = now() WHERE issue_id = $1`, [issueId, ...keys.map((k) => fields[k as keyof Fields])]);
 }
+
+/** Principle 11: the reporter sees progress. Reports are linked to the issue by its key (issue_ref). */
+export async function setReportStatus(db: pg.Pool, issueKey: string, status: "in_progress" | "fixed" | "delivered"): Promise<void> {
+  await db.query("UPDATE feedback_outbox SET status = $2, updated_at = now() WHERE issue_ref = $1", [issueKey, status]);
+}

@@ -40,6 +40,8 @@ jobs:
         run: npm run typecheck -w delivery && npm test -w delivery
       - name: Script tests (no-fly check)
         run: npm run test:scripts
+      - name: Full level tests (separate test database)
+        run: npm run typecheck -w full && npm test -w full
       - name: Build demo (builds and copies widget.js)
         run: npm run build -w demo
       - name: Demo types

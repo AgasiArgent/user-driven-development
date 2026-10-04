@@ -4,7 +4,7 @@ import type { CodingAgent } from "./agent/types.ts";
 import type { Exec } from "./exec.ts";
 import { addWorktree, changedFiles, commitAndPush, removeWorktree, resetWorktree } from "./git.ts";
 import { runScenario, scenarioFrom } from "./scenario.ts";
-import { claim, updateRun } from "./store.ts";
+import { claim, setReportStatus, updateRun } from "./store.ts";
 import type { Issue, Tracker } from "./tracker/types.ts";
 
 export interface DispatchDeps {
@@ -88,6 +88,7 @@ async function handle(deps: DispatchDeps, issue: Issue): Promise<"pr" | "human">
         if (pr.code !== 0) throw new Error(`gh pr create failed: ${pr.stderr.slice(0, 300)}`);
         const url = pr.stdout.trim().split("\n").at(-1) ?? "";
         await updateRun(deps.db, issue.id, { status: "pr_opened", pr_url: url });
+        await setReportStatus(deps.db, issue.key, "in_progress");
         await deps.tracker.comment(issue.id, `Draft PR from the coding agent (round ${round}): ${url}\nAfter it is merged and deployed, the scenario "${scenario}" is re-run in production.`);
         return "pr";
       }

@@ -1,7 +1,7 @@
 import type pg from "pg";
 import type { Exec } from "./exec.ts";
 import { runScenario, scenarioFrom } from "./scenario.ts";
-import { runsWithStatus, updateRun, type Run } from "./store.ts";
+import { runsWithStatus, setReportStatus, updateRun, type Run } from "./store.ts";
 import type { Tracker } from "./tracker/types.ts";
 
 export interface VerifyDeps {
@@ -59,6 +59,7 @@ async function verifyRun(deps: VerifyDeps, run: Run): Promise<Outcome> {
   await deps.tracker.setState(run.issue_id, "In Review");
   await deps.tracker.comment(run.issue_id, `Deployed and verified in production: the scenario "${scenario}" passes. Please check it and mark the issue Done.`);
   await updateRun(deps.db, run.issue_id, { status: "verified" });
+  await setReportStatus(deps.db, run.issue_key, "fixed");
   return "verified";
 }
 

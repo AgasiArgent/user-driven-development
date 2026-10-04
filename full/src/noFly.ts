@@ -8,6 +8,8 @@ export interface NoFlyRules {
   paths: string[];
   /** From .udd/no-fly-keywords.txt: a report word starting with one of these is a no-fly area. */
   keywords: string[];
+  /** From .udd/research-ignore.txt: folders research does not search (the loop itself). */
+  researchIgnore: string[];
 }
 
 export function loadRules(repoRoot: string): NoFlyRules {
@@ -18,7 +20,7 @@ export function loadRules(repoRoot: string): NoFlyRules {
       return [];
     }
   };
-  return { paths: read("no-fly.txt"), keywords: read("no-fly-keywords.txt").map((k) => k.toLowerCase()) };
+  return { paths: read("no-fly.txt"), keywords: read("no-fly-keywords.txt").map((k) => k.toLowerCase()), researchIgnore: read("research-ignore.txt") };
 }
 
 /** Principle 4: decided in code at research time, before any agent sees the issue. */

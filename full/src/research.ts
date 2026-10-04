@@ -32,7 +32,7 @@ export interface RepoFiles {
 }
 
 const SOURCE = /\.(tsx?|jsx?|mjs|css|html|vue|svelte|py|rb|go)$/;
-const SKIP = /(^|\/)(node_modules|dist|\.next|build|coverage|test-results)\//;
+const SKIP = /(^|\/)(node_modules|dist|\.next|build|coverage|test-results|test|tests|e2e|__tests__)\/|\.(test|spec)\.[a-z]+$/;
 const MAX_REFS = 5;
 
 /** Words worth searching for: the element's text, class and id names from its selector, URL path segments. */
@@ -67,7 +67,10 @@ export async function findCodeRefs(p: Payload, repo: RepoFiles): Promise<CodeRef
       const n = hits.filter((t) => l.includes(t)).length;
       if (n > best) [best, index] = [n, i];
     });
-    scored.push({ file, line: index + 1 || 1, snippet: (lines[index] ?? "").trim().slice(0, 160), score: hits.length });
+    // A file that renders the element's text (">Book<") points at the element itself.
+    const text = p.target?.text?.trim();
+    const renders = text && text.length >= 3 && new RegExp(`>\\s*${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*<`).test(content) ? 1 : 0;
+    scored.push({ file, line: index + 1 || 1, snippet: (lines[index] ?? "").trim().slice(0, 160), score: hits.length + renders });
   }
   return scored
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file))

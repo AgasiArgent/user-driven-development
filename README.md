@@ -33,7 +33,7 @@ flowchart TD
 | Coding agent | Claude Code or Codex in Actions | Codex Cloud |
 | Red-first scenario, rework rounds, production verification | No | Yes |
 | You need | A GitHub repository and a model API key | A server, a Linear account, a ChatGPT plan with Codex Cloud |
-| Status | Ready, off by default — [how to turn it on](docs/basic-level.md) | Planned (part 3) |
+| Status | Ready, off by default — [how to turn it on](docs/basic-level.md) | Reference implementation, tested against fakes — [how to run it](docs/full-level.md) |
 
 The basic level is meant to be set up from a fork. The full level is the loop from the [case study](docs/case-study.md); it needs infrastructure of your own.
 
@@ -74,8 +74,9 @@ To deliver reports onward to GitHub Issues and a coding agent, see the [basic le
 | `demo/` | Roomly: Next.js + Postgres demo app, the feedback intake, unit and end-to-end tests |
 | `delivery/` | Basic level: moves reports from the queue into GitHub Issues and mirrors their status back |
 | `.github/workflows/udd-fix.yml` | Basic level: approved issue → coding agent → no-fly check → draft PR |
-| `.udd/no-fly.txt`, `scripts/` | Paths the agent may not change, and the check that enforces it |
-| `docs/` | Concept, case study, threat model, seeded bugs, basic level |
+| `full/` | Full level: research, intake into Linear, dispatcher for Codex Cloud, production verification, liveness |
+| `.udd/`, `scripts/` | No-fly paths and keywords, research ignore list, and the check that enforces no-fly paths |
+| `docs/` | Concept, case study, threat model, seeded bugs, basic and full level |
 
 ## What it costs
 
@@ -96,7 +97,7 @@ In the system described in the case study, 121 of 479 dispatched issues were mar
 0. Concept, principles, case study — **done**.
 1. A demo application with a feedback widget (pin, comment, screenshot) — **done**.
 2. The basic level on GitHub Issues and Actions — **done** (off by default).
-3. The full level: queue, research, Linear, Codex Cloud, red-first scenarios, production verification.
+3. The full level: queue, research, Linear, Codex Cloud, red-first scenarios, production verification — **done** (reference, not yet run against live services).
 
 ## License
 

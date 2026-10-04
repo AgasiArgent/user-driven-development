@@ -6,6 +6,8 @@
 .github/**
 .udd/**
 scripts/**
+delivery/**
+full/**
 
 # The feedback contract, intake and privacy masking
 contracts/**
