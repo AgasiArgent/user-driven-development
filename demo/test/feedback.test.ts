@@ -1,6 +1,6 @@
 import pg from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { handleFeedbackGet, handleFeedbackPost } from "../lib/feedback";
+import { handleFeedbackGet, handleFeedbackPost, handleScreenshotGet } from "../lib/feedback";
 
 const url = process.env.DATABASE_URL ?? "postgres://udd:udd@localhost:55432/udd";
 const pool = new pg.Pool({ connectionString: url, max: 2 });
@@ -91,5 +91,23 @@ describe("GET /api/feedback", () => {
 
   it("requires the user parameter", async () => {
     expect((await handleFeedbackGet(new Request("http://x/api/feedback"), pool)).status).toBe(400);
+  });
+});
+
+describe("GET /api/feedback/:id/screenshot", () => {
+  it("returns the stored PNG", async () => {
+    const png = "data:image/png;base64," + Buffer.from("fake png").toString("base64");
+    await handleFeedbackPost(post(JSON.stringify(report({ screenshot: png }))), pool);
+    const res = await handleScreenshotGet("FB-1", pool);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("fake png");
+  });
+
+  it("answers 404 for a report without a screenshot and for an unknown or malformed id", async () => {
+    await handleFeedbackPost(post(JSON.stringify(report())), pool);
+    expect((await handleScreenshotGet("FB-1", pool)).status).toBe(404);
+    expect((await handleScreenshotGet("FB-999", pool)).status).toBe(404);
+    expect((await handleScreenshotGet("1;drop", pool)).status).toBe(404);
   });
 });

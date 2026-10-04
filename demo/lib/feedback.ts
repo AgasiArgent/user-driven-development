@@ -87,3 +87,13 @@ export async function handleFeedbackGet(req: Request, db: Db): Promise<Response>
     return json(503, { error: "Reports are unavailable right now." });
   }
 }
+
+/** The screenshot of one report, linked from the tracker issue. Same caveat: no auth in the demo. */
+export async function handleScreenshotGet(ref: string, db: Db): Promise<Response> {
+  const match = /^FB-(\d{1,18})$/.exec(ref);
+  if (!match) return json(404, { error: "Not found." });
+  const { rows } = await db.query<{ screenshot: Buffer | null }>("SELECT screenshot FROM feedback_outbox WHERE id = $1", [match[1]]);
+  const png = rows[0]?.screenshot;
+  if (!png) return json(404, { error: "Not found." });
+  return new Response(new Uint8Array(png), { headers: { "content-type": "image/png", "cache-control": "private, max-age=300" } });
+}
