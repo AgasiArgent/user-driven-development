@@ -1,0 +1,21 @@
+# Paths the coding agent may not change on its own (principle 4: no-fly zones enforced in code).
+# One glob per line: ** = any number of folders, * = anything inside one folder name.
+# A change to any of these never becomes an automatic PR; a human makes it.
+
+# The loop itself and its guard rails
+.github/**
+.udd/**
+scripts/**
+
+# The feedback contract, intake and privacy masking
+contracts/**
+demo/lib/feedback.ts
+widget/src/mask.ts
+
+# Database schema and dependencies
+demo/db/migrations/**
+**/package.json
+**/package-lock.json
+
+# Secrets and environment
+**/.env*
