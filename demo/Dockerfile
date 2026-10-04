@@ -13,7 +13,9 @@ RUN npm run build -w demo
 
 FROM node:24-slim
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3100 HOSTNAME=0.0.0.0
+# The commit this image was built from; served at /api/version for production verification.
+ARG GIT_SHA=""
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3100 HOSTNAME=0.0.0.0 GIT_SHA=$GIT_SHA
 COPY --from=build /app/demo/.next/standalone ./
 COPY --from=build /app/demo/.next/static ./demo/.next/static
 COPY --from=build /app/demo/public ./demo/public
