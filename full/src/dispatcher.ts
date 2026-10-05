@@ -19,6 +19,11 @@ export interface DispatchDeps {
   /** Production URL the red-first scenario runs against. */
   prodUrl: string;
   noFlyPaths: string[];
+  /**
+   * The only variables install, checks and scenarios see (they run code the agent wrote). Point
+   * DATABASE_URL at a throwaway database: the demo's tests truncate tables.
+   */
+  checksEnv?: Record<string, string>;
   checks?: [string, string[]];
   install?: [string, string[]];
   sleep?: (ms: number) => Promise<void>;
@@ -28,36 +33,43 @@ export interface DispatchDeps {
 
 const MAX_ROUNDS = 3;
 
-/** Principles 3, 5, 6 and 8: one pass over "Approved for fix". */
-export async function dispatchOnce(deps: DispatchDeps): Promise<{ prOpened: number; needsHuman: number; skipped: number }> {
-  const result = { prOpened: 0, needsHuman: 0, skipped: 0 };
+/** Principles 3, 5, 6 and 8: one pass over "Approved for fix". One issue's failure never stops the pass. */
+export async function dispatchOnce(deps: DispatchDeps): Promise<{ prOpened: number; needsHuman: number; skipped: number; errors: number }> {
+  const result = { prOpened: 0, needsHuman: 0, skipped: 0, errors: 0 };
   for (const listed of await deps.tracker.listByState("Approved for fix")) {
     if (!(await claim(deps.db, listed.id, listed.key))) {
       result.skipped++;
       continue;
     }
-    const issue = await deps.tracker.get(listed.id);
-    if (issue.state !== "Approved for fix") {
-      await release(deps, issue);
-      continue;
+    try {
+      const issue = await deps.tracker.get(listed.id);
+      if (issue.state !== "Approved for fix") {
+        await release(deps, issue.id);
+        continue;
+      }
+      if ((await handle(deps, issue)) === "pr") result.prOpened++;
+      else result.needsHuman++;
+    } catch (err) {
+      // Could not even hand it back (tracker down?): forget the claim so the next pass retries.
+      console.error(`dispatch ${listed.key}: ${err instanceof Error ? err.message : err}`);
+      await release(deps, listed.id);
+      result.errors++;
     }
-    const outcome = await handle(deps, issue);
-    if (outcome === "pr") result.prOpened++;
-    else result.needsHuman++;
   }
   return result;
+}
+
+async function release(deps: DispatchDeps, issueId: string): Promise<void> {
+  await deps.db.query("DELETE FROM dispatch_runs WHERE issue_id = $1", [issueId]);
 }
 
 /** Back to Triage with an explanation; forget the run so a deliberate re-approval starts fresh. */
 async function handBack(deps: DispatchDeps, issue: Issue, why: string): Promise<"human"> {
   await deps.tracker.comment(issue.id, `The dispatcher stopped: this needs a human.\n\n${why}`);
   await deps.tracker.setState(issue.id, "Triage");
-  await release(deps, issue);
+  await setReportStatus(deps.db, issue.key, "delivered");
+  await release(deps, issue.id);
   return "human";
-}
-
-async function release(deps: DispatchDeps, issue: Issue): Promise<void> {
-  await deps.db.query("DELETE FROM dispatch_runs WHERE issue_id = $1", [issue.id]);
 }
 
 async function handle(deps: DispatchDeps, issue: Issue): Promise<"pr" | "human"> {
@@ -68,16 +80,23 @@ async function handle(deps: DispatchDeps, issue: Issue): Promise<"pr" | "human">
   if (!scenario) {
     return handBack(deps, issue, "Add a line `Scenario: <title of a Playwright test>` that describes the correct behavior, then approve it again.");
   }
-  const red = await runScenario(deps.exec, { name: scenario, baseUrl: deps.prodUrl, cwd: `${deps.repoDir}/demo` });
-  if (red === "missing") return handBack(deps, issue, `The scenario "${scenario}" was not found among the Playwright tests.`);
-  if (red === "passes") return handBack(deps, issue, `The scenario "${scenario}" already passes in production, so it does not reproduce the problem.`);
-
-  await deps.tracker.setState(issue.id, "In Progress");
   const branch = `udd/${issue.key}`;
   const dir = `${deps.worktreeRoot}/${issue.key}`;
-  await updateRun(deps.db, issue.id, { status: "coding", branch });
+  const isolated = { cwd: dir, isolated: true, env: deps.checksEnv ?? {} };
   try {
-    await addWorktree(deps.exec, deps.repoDir, dir, branch);
+    await addWorktree(deps.exec, deps.repoDir, dir, { branch });
+    const [icmd, iargs] = deps.install ?? ["npm", ["ci"]];
+    const install = await deps.exec(icmd, iargs, isolated);
+    if (install.code !== 0) return await handBack(deps, issue, `Installing dependencies failed:\n\n\`\`\`\n${(install.stdout + install.stderr).slice(-1500)}\n\`\`\``);
+
+    // Principle 5: the scenario from main must fail in production before any agent runs.
+    const red = await runScenario(deps.exec, { name: scenario, baseUrl: deps.prodUrl, cwd: `${dir}/demo`, env: deps.checksEnv });
+    if (red === "missing") return await handBack(deps, issue, `The scenario "${scenario}" was not found among the Playwright tests on main.`);
+    if (red === "passes") return await handBack(deps, issue, `The scenario "${scenario}" already passes in production, so it does not reproduce the problem.`);
+    if (red === "error") return await handBack(deps, issue, `The scenario "${scenario}" could not run (production unreachable or the browser missing). Approve it again when that is fixed.`);
+
+    await deps.tracker.setState(issue.id, "In Progress");
+    await updateRun(deps.db, issue.id, { status: "coding", branch });
     let feedback = "";
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       await updateRun(deps.db, issue.id, { round });
@@ -122,10 +141,8 @@ async function tryOnce(deps: DispatchDeps, issue: Issue, scenario: string, dir: 
   if (!files.length) return { kind: "retry", feedback: "The previous attempt made no changes." };
   const blocked = findViolations(deps.noFlyPaths, files);
   if (blocked.length) return { kind: "no-fly", files: blocked };
-  const [icmd, iargs] = deps.install ?? ["npm", ["ci"]];
-  await deps.exec(icmd, iargs, { cwd: dir });
   const [cmd, args] = deps.checks ?? ["npm", ["run", "test:unit"]];
-  const checks = await deps.exec(cmd, args, { cwd: dir });
+  const checks = await deps.exec(cmd, args, { cwd: dir, isolated: true, env: deps.checksEnv ?? {} });
   return checks.code === 0 ? { kind: "ok" } : { kind: "retry", feedback: `Checks failed:\n${(checks.stdout + checks.stderr).slice(-3000)}` };
 }
 

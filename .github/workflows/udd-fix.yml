@@ -1,30 +1,66 @@
 # Basic level of the loop: an approved feedback issue → coding agent → checks → draft PR.
 # Off by default. Enable with the repository variable UDD_AGENT_ENABLED=true and one secret:
 # ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN. See docs/basic-level.md.
+#
+# Three jobs, so that code written by the agent never runs next to a write token:
+#   guard   — decides whether to run (can comment on the issue, nothing else)
+#   agent   — the agent edits files; read-only token, no stored credentials, tests run without secrets
+#   publish — applies the agent's patch, checks no-fly zones, opens a draft PR; never runs agent code
 name: udd-fix
 
 on:
   issues:
     types: [labeled]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+permissions: {}
 
 concurrency:
   group: udd-fix-${{ github.event.issue.number }}
   cancel-in-progress: false
 
+env:
+  ISSUE: ${{ github.event.issue.number }}
+  BRANCH: udd/fix-${{ github.event.issue.number }}
+
 jobs:
-  fix:
-    # Principle 3: only a human's "approved" label on a feedback issue starts the agent.
+  guard:
+    # Principle 3: only a person's "approved" label on a feedback issue starts the agent.
     if: >-
       github.event.label.name == 'approved' &&
       contains(github.event.issue.labels.*.name, 'feedback') &&
+      github.event.sender.type == 'User' &&
       vars.UDD_AGENT_ENABLED == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      # Principle 8: exactly one agent run per issue.
+      - id: check
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" > /dev/null 2>&1; then
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "The coding agent already worked on this issue (branch \`$BRANCH\`). Delete that branch to run it again."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_KEY" != "true" ]; then
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "The coding agent is enabled but no model key is configured (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  agent:
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
     services:
       postgres:
         image: postgres:16
@@ -37,47 +73,23 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U udd -d udd"
           --health-interval 2s --health-timeout 3s --health-retries 30
-    env:
-      ISSUE: ${{ github.event.issue.number }}
-      BRANCH: udd/fix-${{ github.event.issue.number }}
-      GH_TOKEN: ${{ github.token }}
-      DATABASE_URL: postgres://udd:udd@localhost:55432/udd
-      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    outputs:
+      tests: ${{ steps.tests.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      # Principle 8: exactly one agent run per issue.
-      - name: Stop if this issue already has an agent branch
-        id: guard
-        run: |
-          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
-            gh issue comment "$ISSUE" --body "The coding agent already worked on this issue (branch \`$BRANCH\`). Delete that branch to run it again."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif [ "$HAS_KEY" != "true" ]; then
-            gh issue comment "$ISSUE" --body "The coding agent is enabled but no model key is configured (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
+          persist-credentials: false
       - uses: actions/setup-node@v4
-        if: steps.guard.outputs.skip != 'true'
         with:
           node-version: 24
           cache: npm
+      - run: npm ci
 
-      - name: Install and prepare the branch
-        if: steps.guard.outputs.skip != 'true'
-        run: |
-          npm ci
-          npm run migrate -w demo
-          git switch -c "$BRANCH"
-
-      # The agent only edits files. Committing, checking and opening the PR are plain steps below.
+      # The agent only reads and edits files: no shell, so it runs nothing while the model key is present.
       - name: Coding agent
-        if: steps.guard.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
+          github_token: ${{ github.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -96,49 +108,81 @@ jobs:
 
             Rules:
             1. Find the cause in the application code and fix it. Do not hide the symptom.
-            2. Add or update a test that fails without your fix.
+            2. Add or update a test that fails without your fix. You cannot run it; the workflow will.
             3. Do not change any path listed in .udd/no-fly.txt. If the fix needs one, stop and
                explain why in your final answer instead.
-            4. Run the relevant unit tests (npm test -w <package>).
-            5. Do not commit, push or open a pull request; the workflow does that.
+            4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Edit,Write,Read,Glob,Grep,Bash(npm test:*),Bash(npm run test:*),Bash(npx vitest:*)"
+            --allowedTools "Edit,Write,Read,Glob,Grep"
 
-      - name: Did the agent change anything?
-        id: diff
-        if: steps.guard.outputs.skip != 'true'
+      # Saved and uploaded before any agent-written code runs, so tests cannot change the patch.
+      - name: Save the agent's change
         run: |
           git add -A
-          if git diff --cached --quiet; then
+          git diff --cached --binary --no-renames > "$RUNNER_TEMP/agent.patch"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-patch
+          path: ${{ runner.temp }}/agent.patch
+          if-no-files-found: error
+
+      - name: Unit tests (no secrets, read-only token not stored)
+        id: tests
+        continue-on-error: true
+        env:
+          DATABASE_URL: postgres://udd:udd@localhost:55432/udd
+        run: npm run migrate -w demo && npm run test:unit && npm run test:scripts
+
+  publish:
+    needs: agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The checker and its list come from main before the patch is applied: the patch cannot change them.
+      - name: Keep a trusted copy of the no-fly check
+        run: cp scripts/no-fly-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-patch
+          path: ${{ runner.temp }}/patch
+
+      - name: Apply the agent's change
+        id: apply
+        run: |
+          if [ ! -s "$RUNNER_TEMP/patch/agent.patch" ]; then
             gh issue comment "$ISSUE" --body "The coding agent made no changes for this issue."
             echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          git switch -c "$BRANCH"
+          git apply --index "$RUNNER_TEMP/patch/agent.patch"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      # Principle 4: no-fly zones are checked in code, whatever the agent was told.
+      # Principle 4: no-fly zones are checked in code, on what will actually be committed.
       - name: No-fly zones
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.apply.outputs.changed == 'true'
         run: |
-          if ! git diff --cached --name-only | node scripts/no-fly-check.mjs > nofly.txt; then
-            { echo "The coding agent changed files in no-fly zones, so no PR was opened. A human needs to make this change."; echo; cat nofly.txt; } > comment.md
-            gh issue comment "$ISSUE" --body-file comment.md
+          if ! git diff --cached --name-only --no-renames | node "$RUNNER_TEMP/no-fly-check.mjs" "$RUNNER_TEMP/no-fly.txt" > "$RUNNER_TEMP/nofly.txt"; then
+            { echo "The coding agent changed files in no-fly zones, so no PR was opened. A human needs to make this change."; echo; cat "$RUNNER_TEMP/nofly.txt"; } > "$RUNNER_TEMP/comment.md"
+            gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/comment.md"
             exit 1
           fi
 
-      - name: Unit tests
-        id: tests
-        if: steps.diff.outputs.changed == 'true'
-        continue-on-error: true
-        run: npm run test:unit && npm run test:scripts
-
       # Principle 9: the agent stops at a draft PR; a human reviews and merges.
       - name: Draft pull request
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.apply.outputs.changed == 'true'
         env:
           TITLE: ${{ github.event.issue.title }}
-          TESTS: ${{ steps.tests.outcome }}
+          TESTS: ${{ needs.agent.outputs.tests }}
         run: |
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "Fix #$ISSUE (from approved feedback, written by the coding agent)"
@@ -148,7 +192,7 @@ jobs:
             echo
             echo "Written by the coding agent from approved user feedback. Review it like any other change before merging."
             echo
-            echo "Unit tests in the agent run: **$TESTS**"
-          } > pr.md
-          gh pr create --draft --head "$BRANCH" --title "Fix #$ISSUE: ${TITLE:0:80}" --body-file pr.md
+            echo "Unit tests in the agent job: **$TESTS**"
+          } > "$RUNNER_TEMP/pr.md"
+          gh pr create --draft --head "$BRANCH" --title "Fix #$ISSUE: ${TITLE:0:80}" --body-file "$RUNNER_TEMP/pr.md"
           gh issue edit "$ISSUE" --add-label agent-pr

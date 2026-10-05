@@ -1,6 +1,6 @@
 import type { Issue, NewIssue, State, Tracker } from "./types.ts";
 
-/** In-memory tracker for tests and for trying the loop locally (`--memory`). */
+/** In-memory tracker for tests. It forgets everything when the process ends. */
 export class MemoryTracker implements Tracker {
   issues = new Map<string, Issue>();
   comments = new Map<string, string[]>();

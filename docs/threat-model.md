@@ -24,6 +24,7 @@ Before you install the loop, decide which of the two you have. Everything below 
 | No-fly zones checked in code before coding starts | Automated changes to money and access logic, whatever the report says | [4](concept.md#4-no-fly-zones-enforced-in-code) |
 | The coding agent runs without production access and without production secrets | Reading or changing production data through the agent | [9](concept.md#9-merge-and-deploy-are-not-the-coding-agents-job) |
 | The agent only opens draft PRs; a human merges | A change reaching production without review | [9](concept.md#9-merge-and-deploy-are-not-the-coding-agents-job) |
+| Code the agent wrote runs without secrets, write tokens or the application database | A report that steers the agent into writing code that steals keys or wipes data when the tests run | [9](concept.md#9-merge-and-deploy-are-not-the-coding-agents-job) |
 | At most 3 rework rounds per issue | Unbounded cost from one report | [6](concept.md#6-bounded-rework-max-3-rounds) |
 | A bot account with only the permissions it needs | The automation acting with the owner's full rights | [12](concept.md#12-the-bot-has-its-own-account) |
 

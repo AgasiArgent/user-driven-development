@@ -27,6 +27,15 @@ const env = (name: string, fallback?: string): string => {
 
 const repoDir = resolve(process.env.REPO_DIR ?? join(import.meta.dirname, "..", ".."));
 const db = new pg.Pool({ connectionString: env("DATABASE_URL", "postgres://udd:udd@localhost:55432/udd"), max: 3 });
+const worktreeRoot = process.env.WORKTREE_ROOT ?? join(tmpdir(), "udd-worktrees");
+
+/** Code the agent wrote runs with only this environment: a throwaway database, never the app's. */
+function checksEnv(): Record<string, string> {
+  const url = env("UDD_CHECKS_DATABASE_URL");
+  if (url === process.env.DATABASE_URL) throw new Error("UDD_CHECKS_DATABASE_URL must not be the application database: the tests truncate tables.");
+  return { DATABASE_URL: url };
+}
+
 const tracker = () => createLinearTracker({ apiKey: env("LINEAR_API_KEY"), teamId: env("LINEAR_TEAM_ID") });
 const model = () => (process.env.ANTHROPIC_API_KEY ? createAnthropicModel({ apiKey: process.env.ANTHROPIC_API_KEY, model: process.env.UDD_MODEL ?? "claude-sonnet-5-5" }) : undefined);
 
@@ -55,14 +64,15 @@ async function once(): Promise<number> {
           agent: createCodexCloudAgent({ exec: realExec, envId: env("CODEX_ENV_ID") }),
           exec: realExec,
           repoDir,
-          worktreeRoot: process.env.WORKTREE_ROOT ?? join(tmpdir(), "udd-worktrees"),
+          worktreeRoot,
           prodUrl: env("PROD_URL"),
           noFlyPaths: loadRules(repoDir).paths,
+          checksEnv: checksEnv(),
         }),
       );
       return 0;
     case "verify":
-      console.log(await verifyOnce({ db, tracker: tracker(), exec: realExec, repoDir, prodUrl: env("PROD_URL") }));
+      console.log(await verifyOnce({ db, tracker: tracker(), exec: realExec, repoDir, worktreeRoot, prodUrl: env("PROD_URL"), checksEnv: checksEnv() }));
       return 0;
     case "liveness": {
       const alerts = await livenessAlerts(db);

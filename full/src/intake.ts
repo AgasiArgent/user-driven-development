@@ -33,24 +33,33 @@ function researchSection(r: Research, noFly: { blocked: boolean; reasons: string
  * the open issue, anything else a new issue in Triage. No-fly areas get the label no-auto-fix.
  */
 export async function intakeOnce(db: pg.Pool, tracker: Tracker, repo: RepoFiles, opts: IntakeOptions): Promise<{ created: number; grouped: number; failed: number }> {
-  const client = await db.connect();
   const result = { created: 0, grouped: 0, failed: 0 };
-  try {
-    await client.query("BEGIN");
-    const { rows } = await client.query<{ id: string; payload: Payload; attempts: number }>(
-      `SELECT id, payload, attempts FROM feedback_outbox
-        WHERE status = 'received' ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`,
-      [opts.batch ?? 20],
-    );
-    for (const row of rows) {
+  const seen: number[] = [];
+  // One transaction per report (see delivery/src/deliver.ts): a crash keeps earlier reports filed.
+  for (let i = 0; i < (opts.batch ?? 20); i++) {
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query<{ id: string; payload: Payload; attempts: number }>(
+        `SELECT id, payload, attempts FROM feedback_outbox
+          WHERE status = 'received' AND id <> ALL($1::bigint[])
+          ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+        [seen],
+      );
+      const row = rows[0];
+      if (!row) {
+        await client.query("COMMIT");
+        break;
+      }
       const id = Number(row.id);
+      seen.push(id);
       try {
         const r = await research(row.payload, repo, opts.model);
         const marker = `udd:fp=${r.fingerprint}`;
         const existing = await tracker.findOpenByMarker(marker);
         let key: string;
         if (existing) {
-          await tracker.comment(existing.id, `Another report of this problem: **FB-${id}** from \`${row.payload.user ?? "unknown"}\`.\n\n> ${row.payload.comment.replace(/@/g, "@​").split("\n").join("\n> ")}`);
+          await tracker.comment(existing.id, `Another report of this problem: **FB-${id}** from \`${row.payload.user ?? "unknown"}\`.\n\n> ${row.payload.comment.replace(/@/g, "@\u200b").split("\n").join("\n> ")}`);
           key = existing.key;
           result.grouped++;
         } else {
@@ -76,13 +85,13 @@ export async function intakeOnce(db: pg.Pool, tracker: Tracker, repo: RepoFiles,
         );
         result.failed++;
       }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
   }
   return result;
 }

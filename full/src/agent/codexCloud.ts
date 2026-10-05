@@ -15,7 +15,7 @@ export interface CodexCloudOptions {
 export function createCodexCloudAgent({ exec, envId }: CodexCloudOptions): CodingAgent {
   return {
     async start(prompt) {
-      const r = await exec("codex", ["cloud", "exec", "--env", envId, prompt]);
+      const r = await exec("codex", ["cloud", "exec", "--env", envId, "--branch", "main", prompt]);
       if (r.code !== 0) throw new Error(`codex cloud exec failed: ${r.stderr.slice(0, 300)}`);
       const id = /\b(task_[A-Za-z0-9_]+)\b/.exec(r.stdout)?.[1] ?? /\/tasks\/([A-Za-z0-9_-]+)/.exec(r.stdout)?.[1];
       if (!id) throw new Error(`could not read a task id from: ${r.stdout.slice(0, 200)}`);

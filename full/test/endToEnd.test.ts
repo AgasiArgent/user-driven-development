@@ -7,7 +7,7 @@ import { loadRules } from "../src/noFly.ts";
 import { gitRepo } from "../src/repo.ts";
 import { MemoryTracker } from "../src/tracker/memory.ts";
 import { verifyOnce } from "../src/verify.ts";
-import { fail, fakeExec, ok, on } from "./fakeExec.ts";
+import { fakeExec, ok, on, pwFails, pwPasses } from "./fakeExec.ts";
 import { freshTestDb } from "./testDb.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -43,7 +43,8 @@ it("carries one report from the queue to In Review, and the reporter sees each s
   // 5–9. Red-first in production, the agent, checks, a draft PR.
   let prod = "broken";
   const f = fakeExec([
-    on("npx playwright", () => (prod === "broken" ? fail("1 failed") : ok("1 passed"))),
+    on("npx playwright", () => (prod === "broken" ? pwFails() : pwPasses())),
+    on("git rev-parse", ok("bbbbbbb000000000000000000000000000000000\n")),
     on("git status --porcelain", ok(" M demo/app/globals.css\n")),
     on("git diff --name-only", ok("demo/app/globals.css\n")),
     on("gh pr create", ok("https://github.com/acme/roomly/pull/3\n")),
@@ -51,8 +52,8 @@ it("carries one report from the queue to In Review, and the reporter sees each s
     on("gh run list", ok('[{"status":"completed","conclusion":"success"}]')),
   ]);
   const agent = { start: vi.fn(async () => ({ taskId: "task_1" })), poll: vi.fn(async () => "ready" as const), apply: vi.fn(async () => {}) };
-  const common = { db, tracker, exec: f.exec, repoDir: root, prodUrl: "https://roomly.example" };
-  expect(await dispatchOnce({ ...common, agent, worktreeRoot: "/tmp/udd-wt", noFlyPaths: loadRules(root).paths, sleep: async () => {} })).toMatchObject({ prOpened: 1 });
+  const common = { db, tracker, exec: f.exec, repoDir: root, worktreeRoot: "/tmp/udd-wt", prodUrl: "https://roomly.example" };
+  expect(await dispatchOnce({ ...common, agent, noFlyPaths: loadRules(root).paths, sleep: async () => {} })).toMatchObject({ prOpened: 1 });
   expect((await tracker.get(issue.id)).state).toBe("In Progress");
   expect(await status()).toBe("in_progress");
 

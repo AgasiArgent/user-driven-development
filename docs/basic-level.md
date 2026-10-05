@@ -20,7 +20,7 @@ widget → feedback_outbox → delivery → GitHub Issue (label: feedback)
 |---|---|---|
 | Delivery | `delivery/` | Moves reports with status `received` from `feedback_outbox` into GitHub Issues, with retries; mirrors issue state back (`approved`, `in_progress`, `done`, `rejected`) so the reporter sees it under **My feedback**. |
 | Issue text | `delivery/src/issueBody.ts` | Report text is untrusted: HTML is escaped and every `@` gets a zero-width space, so feedback can neither ping people nor wake up bots. |
-| Agent workflow | `.github/workflows/udd-fix.yml` | Runs only when a human adds `approved` to an issue labelled `feedback`, once per issue. The agent edits files; plain steps check no-fly zones, run tests and open a **draft** PR. |
+| Agent workflow | `.github/workflows/udd-fix.yml` | Runs only when a person (not a bot) adds `approved` to an issue labelled `feedback`, once per issue. Three jobs: **guard** decides; **agent** edits files with a read-only token and no shell, then the tests run without secrets; **publish** applies the saved patch, checks no-fly zones with a copy of the checker taken from `main`, and opens a **draft** PR. Code written by the agent never runs next to a write token. |
 | No-fly zones | `.udd/no-fly.txt`, `scripts/no-fly-check.mjs` | Paths the agent may not change. If it does, no PR is opened and the issue gets a comment. |
 
 ## Turn it on in your fork
@@ -56,4 +56,7 @@ Each approved issue is one agent run, capped at 30 turns. With an API key you pa
 - **PRs opened with the workflow's `GITHUB_TOKEN` do not start other workflows**, so CI does not run on them automatically. Push an empty commit, or use a GitHub App token for the PR step if you need checks to run.
 - **The agent cannot reproduce the problem in a browser** and nothing checks the fix in production. That is what the full level adds.
 - **The approval is the main defence** against a report that tries to steer the agent. Read the issue before you add `approved`. See the [threat model](threat-model.md).
-- The no-fly check runs after the agent, on the files it changed. It does not stop the agent from reading those files.
+- The no-fly check runs on the patch that will be committed, with rename detection off, so moving a protected file is caught. It does not stop the agent from reading those files.
+- **Screenshots in public issues are public.** With `PUBLIC_BASE_URL` set, every issue links to `/api/feedback/FB-<n>/screenshot`, which has no authentication and sequential ids. In a public fork, leave `PUBLIC_BASE_URL` unset or put that route behind your app's login.
+- The agent has no shell, so it cannot run tests itself; the workflow runs them after it, and the result goes into the PR description.
+- With `ANTHROPIC_API_KEY`, set a monthly spend limit on the key in the Anthropic console.

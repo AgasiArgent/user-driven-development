@@ -65,3 +65,30 @@ describe("intakeOnce", () => {
     expect((await rows())[0]).toMatchObject({ status: "received", attempts: 1 });
   });
 });
+
+describe("intake crash safety", () => {
+  it("commits each report on its own", async () => {
+    await addReport("first one");
+    await addReport("second one", { target: { selector: "h1", tagName: "h1", text: "Rooms" } });
+    const tracker = new MemoryTracker();
+    let calls = 0;
+    let secondStarted!: () => void;
+    let killSecond!: (e: Error) => void;
+    const started = new Promise<void>((r) => (secondStarted = r));
+    const realCreate = tracker.create.bind(tracker);
+    tracker.create = (issue) => {
+      calls++;
+      if (calls === 2) {
+        secondStarted();
+        return new Promise((_, reject) => (killSecond = reject));
+      }
+      return realCreate(issue);
+    };
+    const pass = intakeOnce(db, tracker, repo, { rules }).catch(() => {});
+    await started;
+    expect((await rows())[0].status).toBe("delivered");
+    killSecond(new Error("killed"));
+    await pass;
+  });
+});
+

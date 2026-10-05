@@ -131,3 +131,41 @@ describe("issue title", () => {
     expect(tracker.issues.get(1)!.title).toBe("[FB-1] Total < 0 after @​bob edits");
   });
 });
+
+describe("crash safety", () => {
+  it("commits each delivered report on its own, so a crash mid-batch does not undo earlier rows", async () => {
+    await addReport("first");
+    await addReport("second");
+    const tracker = new FakeTracker();
+    let calls = 0;
+    let secondStarted!: () => void;
+    let killSecond!: (e: Error) => void;
+    const started = new Promise<void>((r) => (secondStarted = r));
+    const realCreate = tracker.createIssue.bind(tracker);
+    tracker.createIssue = (issue) => {
+      calls++;
+      if (calls === 2) {
+        secondStarted();
+        return new Promise((_, reject) => (killSecond = reject)); // hangs, like a process about to be killed
+      }
+      return realCreate(issue);
+    };
+    const pass = deliverOnce(db, tracker, opts).catch(() => {});
+    await started;
+    expect((await row(1)).status).toBe("delivered");
+    killSecond(new Error("killed"));
+    await pass;
+  });
+
+  it("keeps syncing other issues when one of them cannot be read", async () => {
+    await addReport("a");
+    await addReport("b");
+    const tracker = new FakeTracker();
+    await deliverOnce(db, tracker, opts);
+    tracker.issues.delete(1);
+    tracker.issues.get(2)!.labels = ["feedback", "approved"];
+    await syncStatuses(db, tracker, opts);
+    expect((await row(2)).status).toBe("approved");
+  });
+});
+

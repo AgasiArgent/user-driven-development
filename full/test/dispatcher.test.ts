@@ -4,7 +4,7 @@ import type { CodingAgent } from "../src/agent/types.ts";
 import { dispatchOnce, type DispatchDeps } from "../src/dispatcher.ts";
 import { getRun } from "../src/store.ts";
 import { MemoryTracker } from "../src/tracker/memory.ts";
-import { fail, fakeExec, ok, on } from "./fakeExec.ts";
+import { fail, fakeExec, ok, on, pwBroken, pwFails, pwMissing, pwPasses } from "./fakeExec.ts";
 import { freshTestDb } from "./testDb.ts";
 
 let db: pg.Pool;
@@ -28,7 +28,7 @@ class ScriptedAgent implements CodingAgent {
 }
 
 interface Script {
-  scenario?: "fails" | "passes" | "missing";
+  scenario?: "fails" | "passes" | "missing" | "error";
   changed?: string;
   checks?: "pass" | "fail";
 }
@@ -36,9 +36,10 @@ interface Script {
 function setup(script: Script = {}, agent = new ScriptedAgent()) {
   const { scenario = "fails", changed = "demo/components/BookingForm.tsx", checks = "pass" } = script;
   const f = fakeExec([
-    on("npx playwright", () => (scenario === "missing" ? { code: 1, stdout: "Error: No tests found", stderr: "" } : scenario === "fails" ? fail("1 failed") : ok("1 passed"))),
+    on("npx playwright", () => ({ fails: pwFails, passes: pwPasses, missing: pwMissing, error: pwBroken })[scenario]()),
     on("git status --porcelain", ok(changed ? ` M ${changed}\n` : "")),
     on("git diff --name-only", ok(changed ? `${changed}\n` : "")),
+    on("npm ci", ok()),
     on("npm run test:unit", () => (checks === "pass" ? ok("all passed") : fail("FAIL demo/test/bookings.test.ts: expected 409, got 201"))),
     on("gh pr create", ok("https://github.com/acme/roomly/pull/12\n")),
   ]);
@@ -52,6 +53,7 @@ function setup(script: Script = {}, agent = new ScriptedAgent()) {
     worktreeRoot: "/tmp/udd-wt",
     prodUrl: "https://roomly.example",
     noFlyPaths: [".github/**", "demo/lib/feedback.ts"],
+    checksEnv: { DATABASE_URL: "postgres://throwaway/checks" },
     sleep: async () => {},
     maxPolls: 3,
   };
@@ -157,5 +159,70 @@ describe("dispatchOnce", () => {
     await approved(tracker);
     expect(await dispatchOnce(deps)).toMatchObject({ needsHuman: 1 });
     expect(agent.prompts).toHaveLength(3);
+  });
+
+  it("runs install and checks in an isolated environment with the throwaway database, never the app's", async () => {
+    const { f, tracker, deps } = setup();
+    await approved(tracker);
+    await dispatchOnce(deps);
+    const agentCode = f.calls.filter((c) => c.cmd === "npm" || c.cmd === "npx");
+    expect(agentCode.length).toBeGreaterThanOrEqual(3);
+    for (const c of agentCode) expect(c.isolated).toBe(true);
+    for (const c of agentCode.filter((c) => c.cmd === "npm")) expect(c.env?.DATABASE_URL).toBe("postgres://throwaway/checks");
+  });
+
+  it("runs the red-first scenario from a fresh checkout of main, not from a stale clone", async () => {
+    const { f, tracker, deps } = setup();
+    await approved(tracker);
+    await dispatchOnce(deps);
+    const lines = f.calls.map((_, i) => f.line(i));
+    const add = lines.findIndex((l) => l.startsWith("git worktree add"));
+    const red = f.calls.findIndex((c) => c.cmd === "npx");
+    expect(add).toBeGreaterThanOrEqual(0);
+    expect(red).toBeGreaterThan(add);
+    expect(f.calls[red].cwd).toBe("/tmp/udd-wt/MEM-1/demo");
+    expect(lines.findIndex((l) => l.startsWith("git worktree remove"))).toBeLessThan(add); // clears a leftover first
+  });
+
+  it("does not dispatch when the scenario could not run at all", async () => {
+    const { tracker, agent, deps } = setup({ scenario: "error" });
+    const issue = await approved(tracker);
+    await dispatchOnce(deps);
+    expect(agent.prompts).toHaveLength(0);
+    expect(tracker.comments.get(issue.id)?.[0]).toMatch(/could not run/);
+  });
+
+  it("lists changed files without rename detection, so a moved no-fly file is still seen", async () => {
+    const { f, tracker, deps } = setup();
+    await approved(tracker);
+    await dispatchOnce(deps);
+    const diff = f.calls.find((c) => c.cmd === "git" && c.args[0] === "diff")!;
+    expect(diff.args).toContain("--no-renames");
+  });
+
+  it("force-pushes its own branch, so a re-approval after a closed PR can push again", async () => {
+    const { f, tracker, deps } = setup();
+    await approved(tracker);
+    await dispatchOnce(deps);
+    expect(f.calls.find((c) => c.cmd === "git" && c.args[0] === "push")!.args).toContain("--force");
+  });
+
+  it("releases the claim when something fails before the agent starts, and keeps going with the next issue", async () => {
+    const { tracker, agent, deps } = setup();
+    const first = await approved(tracker);
+    await approved(tracker);
+    const realSetState = tracker.setState.bind(tracker);
+    let broken = true;
+    tracker.setState = async (id, state) => {
+      if (broken && id === first.id) {
+        broken = false;
+        throw new Error("Linear: 503");
+      }
+      return realSetState(id, state);
+    };
+    const result = await dispatchOnce(deps);
+    expect(await getRun(db, first.id)).toBeUndefined();
+    expect(agent.prompts).toHaveLength(1);
+    expect(result.prOpened).toBe(1);
   });
 });

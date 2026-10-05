@@ -1,5 +1,6 @@
 import type pg from "pg";
 import type { Exec } from "./exec.ts";
+import { addWorktree, fullSha, removeWorktree } from "./git.ts";
 import { runScenario, scenarioFrom } from "./scenario.ts";
 import { runsWithStatus, setReportStatus, updateRun, type Run } from "./store.ts";
 import type { Tracker } from "./tracker/types.ts";
@@ -9,7 +10,12 @@ export interface VerifyDeps {
   tracker: Tracker;
   exec: Exec;
   repoDir: string;
+  /** Where the checkout of the production commit is made. */
+  worktreeRoot: string;
   prodUrl: string;
+  /** Only variables the scenario run sees (it runs repository code). */
+  checksEnv?: Record<string, string>;
+  install?: [string, string[]];
   fetchFn?: typeof fetch;
 }
 
@@ -33,13 +39,16 @@ async function verifyRun(deps: VerifyDeps, run: Run): Promise<Outcome> {
   if (state !== "MERGED" || !mergeCommit) {
     await deps.tracker.comment(run.issue_id, `The PR was closed without merging: ${run.pr_url}. Back to Triage.`);
     await deps.tracker.setState(run.issue_id, "Triage");
+    await setReportStatus(deps.db, run.issue_key, "delivered");
     await deps.db.query("DELETE FROM dispatch_runs WHERE issue_id = $1", [run.issue_id]);
     return "closed";
   }
 
-  const prodSha = await productionSha(deps);
-  if (!prodSha) return "waiting";
+  const reported = await productionSha(deps);
+  if (!reported) return "waiting";
   await deps.exec("git", ["fetch", "-q", "origin"], { cwd: deps.repoDir });
+  const prodSha = await fullSha(deps.exec, deps.repoDir, reported);
+  if (!prodSha) return "waiting";
   const deployed = await deps.exec("git", ["merge-base", "--is-ancestor", mergeCommit.oid, prodSha], { cwd: deps.repoDir });
   if (deployed.code !== 0) return "waiting";
 
@@ -52,7 +61,8 @@ async function verifyRun(deps: VerifyDeps, run: Run): Promise<Outcome> {
 
   const issue = await deps.tracker.get(run.issue_id);
   const scenario = scenarioFrom(issue.body);
-  const check = scenario ? await runScenario(deps.exec, { name: scenario, baseUrl: deps.prodUrl, cwd: `${deps.repoDir}/demo` }) : "missing";
+  const check = scenario ? await scenarioAt(deps, run, prodSha, scenario) : "missing";
+  if (check === "error") return "waiting";
   if (check !== "passes") {
     return failed(deps, run, `The fix is deployed, but the scenario "${scenario}" still fails in production. A human needs to look.`);
   }
@@ -77,5 +87,21 @@ async function productionSha(deps: VerifyDeps): Promise<string | null> {
     return sha && /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
   } catch {
     return null;
+  }
+}
+
+/** The scenario as it exists in the commit production runs, from a clean checkout of that commit. */
+async function scenarioAt(deps: VerifyDeps, run: Run, sha: string, scenario: string) {
+  const dir = `${deps.worktreeRoot}/verify-${run.issue_key}`;
+  try {
+    await addWorktree(deps.exec, deps.repoDir, dir, { ref: sha });
+    const [cmd, args] = deps.install ?? ["npm", ["ci"]];
+    const install = await deps.exec(cmd, args, { cwd: dir, isolated: true, env: deps.checksEnv ?? {} });
+    if (install.code !== 0) return "error" as const;
+    return await runScenario(deps.exec, { name: scenario, baseUrl: deps.prodUrl, cwd: `${dir}/demo`, env: deps.checksEnv });
+  } catch {
+    return "error" as const;
+  } finally {
+    await removeWorktree(deps.exec, deps.repoDir, dir);
   }
 }

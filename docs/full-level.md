@@ -50,6 +50,7 @@ widget → feedback_outbox ──intake──▶ research ──▶ Linear: Tria
    | `REPO_DIR` | all | A clone of this repository (default: this checkout) |
    | `ANTHROPIC_API_KEY`, `UDD_MODEL` | intake (optional) | Model for research; without it research still finds code and duplicates |
    | `PUBLIC_BASE_URL` | intake (optional) | Links screenshots from issues |
+   | `UDD_CHECKS_DATABASE_URL` | dispatch, verify | **A throwaway database** for the checks. Install, tests and scenarios run code the agent wrote, with only this variable set — never the server's `DATABASE_URL`, API keys or tokens. It must differ from `DATABASE_URL`: the demo's tests truncate tables. |
 
 6. **Run** each step on a schedule (cron or systemd):
    ```bash
@@ -59,6 +60,12 @@ widget → feedback_outbox ──intake──▶ research ──▶ Linear: Tria
    npm run loop -w full -- liveness        # every 10 minutes; alert on exit code 1
    npm run loop -w full -- intake --dry-run  # see what research finds, without writing anything
    ```
+
+## Isolation
+
+Install, unit tests and Playwright scenarios run code the agent wrote. The dispatcher runs them with an almost empty environment (`PATH`, `HOME`, `LANG` and `UDD_CHECKS_DATABASE_URL` as `DATABASE_URL`), so they cannot read the application database or the loop's keys. They still run as the same operating-system user on the same machine. For production use, run the dispatcher in a container or a separate user account with nothing else on it.
+
+A scenario that could not run at all (production unreachable, browser missing, unreadable output) never counts as a failing test: dispatch hands the issue back with that reason, and verify waits and tries again.
 
 ## What a human does
 

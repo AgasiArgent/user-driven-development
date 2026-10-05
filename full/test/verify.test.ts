@@ -4,7 +4,7 @@ import { livenessAlerts } from "../src/liveness.ts";
 import { claim, getRun, updateRun } from "../src/store.ts";
 import { MemoryTracker } from "../src/tracker/memory.ts";
 import { verifyOnce, type VerifyDeps } from "../src/verify.ts";
-import { fail, fakeExec, ok, on } from "./fakeExec.ts";
+import { fakeExec, ok, on, pwBroken, pwFails, pwPasses } from "./fakeExec.ts";
 import { freshTestDb } from "./testDb.ts";
 
 let db: pg.Pool;
@@ -18,7 +18,7 @@ interface World {
   pr?: string;
   deployed?: boolean;
   ci?: string;
-  scenario?: "passes" | "fails";
+  scenario?: "passes" | "fails" | "error";
   version?: string | null;
 }
 
@@ -33,10 +33,11 @@ async function setup(w: World = {}) {
     on("gh pr view", ok(pr)),
     on("git merge-base --is-ancestor", deployed ? ok() : { code: 1, stdout: "", stderr: "" }),
     on("gh run list", ok(ci)),
-    on("npx playwright", scenario === "passes" ? ok("1 passed") : fail("1 failed")),
+    on("git rev-parse", ok("def4567000000000000000000000000000000000\n")),
+    on("npx playwright", { passes: pwPasses, fails: pwFails, error: pwBroken }[scenario]()),
   ]);
   const fetchFn = vi.fn(async () => (version === null ? new Response("down", { status: 502 }) : Response.json({ sha: version })));
-  const deps: VerifyDeps = { db, tracker, exec: f.exec, repoDir: "/repo", prodUrl: "https://roomly.example", fetchFn: fetchFn as unknown as typeof fetch };
+  const deps: VerifyDeps = { db, tracker, exec: f.exec, repoDir: "/repo", worktreeRoot: "/tmp/udd-wt", prodUrl: "https://roomly.example", checksEnv: { DATABASE_URL: "postgres://throwaway/checks" }, fetchFn: fetchFn as unknown as typeof fetch };
   return { tracker, issue, deps, f };
 }
 
@@ -48,6 +49,22 @@ describe("verifyOnce", () => {
     expect((await getRun(db, issue.id))?.status).toBe("verified");
     const pw = f.calls.find((c) => c.cmd === "npx")!;
     expect(pw.env).toMatchObject({ UDD_BASE_URL: "https://roomly.example", EXPECT_FIXED: "1" });
+  });
+
+  it("runs the scenario from a checkout of the exact commit production runs, and asks CI about the full commit id", async () => {
+    const { deps, f } = await setup();
+    await verifyOnce(deps);
+    const lines = f.calls.map((_, i) => f.line(i));
+    expect(lines).toContain("git worktree add -f --detach /tmp/udd-wt/verify-MEM-1 def4567000000000000000000000000000000000");
+    expect(f.calls.find((c) => c.cmd === "npx")!.cwd).toBe("/tmp/udd-wt/verify-MEM-1/demo");
+    expect(lines.find((l) => l.startsWith("gh run list"))).toContain("def4567000000000000000000000000000000000");
+  });
+
+  it("waits, instead of failing, when the scenario could not run", async () => {
+    const { tracker, issue, deps } = await setup({ scenario: "error" });
+    expect(await verifyOnce(deps)).toMatchObject({ waiting: 1 });
+    expect((await getRun(db, issue.id))?.status).toBe("pr_opened");
+    expect(tracker.comments.get(issue.id)).toBeUndefined();
   });
 
   it("waits while the PR is still open", async () => {
