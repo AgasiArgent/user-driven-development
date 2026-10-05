@@ -30,7 +30,7 @@ flowchart TD
 |---|---|---|
 | Feedback goes to | GitHub Issues | A queue table in your database |
 | Coding agent starts from | GitHub Actions | A dispatcher on your own server, polling Linear |
-| Coding agent | Claude Code or Codex in Actions | Codex Cloud |
+| Coding agent | Claude Code (GitHub Action) | Codex Cloud |
 | Red-first scenario, rework rounds, production verification | No | Yes |
 | You need | A GitHub repository and a model API key | A server, a Linear account, a ChatGPT plan with Codex Cloud |
 | Status | Ready, off by default — [how to turn it on](docs/basic-level.md) | Reference implementation, tested against fakes — [how to run it](docs/full-level.md) |
