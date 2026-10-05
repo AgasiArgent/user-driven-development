@@ -6,8 +6,8 @@ The numbers come from four places: the dispatcher's state file, the product's gi
 
 ## Context
 
-- **The system:** an internal B2B web application of a small team, in production, used by staff on the customer's side.
-- **The reporters:** testers and staff on the customer's side — 30 reporter accounts (2 of them look like test accounts) and 589 pinned reports between weeks 3 and 14. They are known people, not the public.
+- **The system:** a web application in production.
+- **The reporters:** a known group of testers and users — 30 reporter accounts (2 of them look like test accounts) and 589 pinned reports between weeks 3 and 14. Not the public.
 - **The developer:** one owner-developer, working with coding agents (Claude Code, Codex, Cursor).
 - **The tracker:** Linear. **The coding agent in the current loop:** Codex Cloud, started from the tracker.
 
