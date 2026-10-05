@@ -6,7 +6,7 @@ The numbers come from four places: the dispatcher's state file, the product's gi
 
 ## Context
 
-- **The system:** a web application in production.
+- **The system:** the ERP of a company of about 200 people, in production.
 - **The reporters:** a known group of testers and users — 30 reporter accounts (2 of them look like test accounts) and 589 pinned reports between weeks 3 and 14. Not the public.
 - **The developer:** one owner-developer, working with coding agents (Claude Code, Codex, Cursor).
 - **The tracker:** Linear. **The coding agent in the current loop:** Codex Cloud, started from the tracker.
@@ -48,6 +48,14 @@ The three most common failure reasons:
 | The cloud task never appeared within 24 hours | 41 |
 | An existing PR for the issue was not an open draft against the main branch, so the dispatcher stopped | 36 |
 | Caught in the `git add` outage and marked failed by hand when it ended | 13 |
+
+Rework seen by testers, from the tracker's history (an issue counted in the month it first entered *In Review*; "returned" = moved back to *In Progress* or *Approved for fix* within 30 days):
+
+| Month | Sent for review | Returned | Share |
+|---|---|---|---|
+| July | 81 | 23 | 28% (38% counting one day of a bulk rollback) |
+| August | 188 | 24 | 13% |
+| September | 234 | 14 | 6% |
 
 ## What broke
 

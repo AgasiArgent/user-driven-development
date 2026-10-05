@@ -8,6 +8,14 @@ This repository describes that loop, the principles it needs, and what happened 
 
 > The name is used elsewhere for "involving users in design". Here it means something narrower: the user's report is the input that starts a code change.
 
+## Why this exists
+
+I'm not a software engineer by training — I ran businesses and sales teams. Today I build, on my own and with coding agents, the ERP of a company of about 200 people. Its users report problems by pointing at them on the screen, and this loop is how those reports turn into fixes.
+
+It did not work well at first. In July, about 30% of the fixes I sent for review came back for rework. In September it was about 6%. What changed in between are the rules in [concept.md](docs/concept.md) — almost every one of them was added after something broke, and the [case study](docs/case-study.md) shows what.
+
+This repository is **not** my production setup copied as is. I generalized it into a template with a small demo app, so expect rough edges. If you try it in your own app, I'd like to hear what broke and what you changed — [issues and pull requests are welcome](CONTRIBUTING.md). It may be most useful if, like me, you are not a full-time programmer but run real software with coding agents.
+
 ## The loop
 
 ```mermaid
@@ -84,7 +92,7 @@ Every report starts paid model runs: research on every report, and coding plus c
 
 ## The numbers
 
-In the system described in the case study, 121 of 479 dispatched issues were marked shipped during weeks 4–14 of the automated loop — about one in four, mostly before production verification and red-first scenarios were added. The [case study](docs/case-study.md) shows where the rest went and what broke along the way.
+In the system described in the case study, 121 of 479 dispatched issues were marked shipped during weeks 4–14 of the automated loop — about one in four, mostly before production verification and red-first scenarios were added. Of the fixes sent to testers for review, the share returned for rework within 30 days fell from about 30% in July to 13% in August and 6% in September. The [case study](docs/case-study.md) shows where the rest went and what broke along the way.
 
 ## Documents
 
