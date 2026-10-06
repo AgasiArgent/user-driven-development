@@ -1,16 +1,20 @@
 # User-driven development
 
-**User feedback becomes a pull request — with a human gate and production verification.**
+**How one person can build and run real software for real users: the users find the problems, coding agents fix them, and you answer the product questions.**
+
+User feedback becomes a pull request — with a human gate and production verification.
 
 A user points at a problem inside your running application and writes a comment. An agent researches it and files an issue. You approve it. A coding agent writes a failing scenario, fixes the code and opens a draft PR. After you merge and deploy, the scenario is re-run in production, and the user sees that their report shipped.
 
-This repository describes that loop, the principles it needs, and what happened over fourteen weeks of building and running it in a real system. It is meant for a small team with its own application and a known group of users who send feedback — testers, internal staff, early customers.
+This repository describes that loop, the principles it needs, and what happened over fourteen weeks of building and running it in a real system. It is meant for one developer or a small team with its own application and a known group of users who send feedback — testers, internal staff, early customers. The users act as the testers, coding agents do the implementation, and you decide what gets built.
 
 > The name is used elsewhere for "involving users in design". Here it means something narrower: the user's report is the input that starts a code change.
 
 ## Why this exists
 
 I'm not a software engineer by training — I ran businesses and sales teams. Today I build, on my own and with coding agents, the ERP of a company of about 200 people. Its users report problems by pointing at them on the screen, and this loop is how those reports turn into fixes.
+
+The loop does not close everything on its own. Once a week I run an orchestrator agent over what it could not finish: it collects the open issues and asks me the product questions, I answer them, and it does the implementation. Users test the result in the app. Of the 529 issues sent to the coding agent so far, 467 (88%) are done; most of the rest are waiting in the queue.
 
 It did not work well at first. In July, about 30% of the fixes I sent for review came back for rework. In September it was about 6%. What changed in between are the rules in [concept.md](docs/concept.md) — almost every one of them was added after something broke, and the [case study](docs/case-study.md) shows what.
 
@@ -92,7 +96,7 @@ Every report starts paid model runs: research on every report, and coding plus c
 
 ## The numbers
 
-In the system described in the case study, 121 of 479 dispatched issues were marked shipped during weeks 4–14 of the automated loop — about one in four, mostly before production verification and red-first scenarios were added. Of the fixes sent to testers for review, the share returned for rework within 30 days fell from about 30% in July to 13% in August and 6% in September. The [case study](docs/case-study.md) shows where the rest went and what broke along the way.
+In the system described in the case study, 121 of 479 dispatched issues were marked shipped during weeks 4–14 of the automated loop — about one in four, mostly before production verification and red-first scenarios were added. Most of the rest were finished later through a weekly orchestrator session: of 529 issues dispatched up to 5 October, 467 (88%) are done. Of the fixes sent to testers for review, the share returned for rework within 30 days fell from about 30% in July to 13% in August and 6% in September. The [case study](docs/case-study.md) shows where the rest went and what broke along the way.
 
 ## Documents
 
