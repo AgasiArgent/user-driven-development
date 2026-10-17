@@ -12,7 +12,7 @@ The agent reads [SETUP.md](SETUP.md), asks you a few questions and installs the 
 
 ```mermaid
 flowchart TD
-  U[User pins feedback in the app] --> Q[(Saved in your database)]
+  U[User pins feedback in the app] --> Q[(Saved in your database, optional)]
   Q --> I[GitHub issue labelled feedback]
   I --> R[Agent researches and comments]
   R -->|you add approved| F[Failing test, then the fix, up to 3 attempts]
@@ -33,9 +33,9 @@ I'm not a software engineer by training. I ran businesses and sales teams. Today
 
 The loop did not work well at first. Of the fixes I sent for review, about 30% came back for rework in July, 13% in August and 6% in September. The rules below are what changed in between.
 
-- Over 14 weeks the loop marked 121 of 479 dispatched issues as shipped on its own, about one in four.
-- A weekly session handles the rest. Of 529 issues sent to the coding agent, 467 (88%) are done.
-- At one point it ran for 12 days without errors while producing nothing. That is why [rule 10](RULES.md) says to watch what the loop produces.
+- In numbers: the loop itself brought 121 of 479 issues to completion over 14 weeks, about one in four.
+- A weekly session handles the rest. 467 of 529 issues sent to the coding agent are done (88%).
+- At one point there were 12 days of downtime with no errors: the loop ran and produced nothing. That is why [rule 10](RULES.md) says to watch what the loop produces.
 
 ## The rules
 
@@ -61,6 +61,12 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 
 - **Model.** The workflows run on your Claude Pro or Max subscription through a token from `claude setup-token`. An API key also works. Nothing runs before you add `approved`, except the research on each new report and the weekly routines.
 - **GitHub Actions minutes.** GitHub Actions is free for public repositories on standard GitHub-hosted runners. For private repositories, GitHub's plan table lists 2,000 minutes per month on the Free plan, and the minutes used reset to zero at the start of each month. Larger runners are always charged, even in public repositories. Source: [About billing for GitHub Actions](https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions).
+
+## Limits
+
+- Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token.
+- In a public repository every user report becomes a public issue. Users should not report secrets or personal data. The agent's research comment is cleaned, but it is public too. Security checks run only on your machine there.
+- The database step is optional. Without one, a report can be lost if GitHub is down.
 
 ## Try it first
 

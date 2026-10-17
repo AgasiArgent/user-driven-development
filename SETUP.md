@@ -15,8 +15,8 @@ Other files: `ROUTINES.md` (weekly routines, optional), `WEEKLY.md` (the owner's
 ## 0. Preconditions
 
 1. Get the kit next to the app, outside the app's folder:
-   `git clone --depth 1 https://github.com/AgasiArgent/user-driven-development "$TMPDIR/udd-kit"`
-   and call that folder `$KIT` from here on. Files below that start with `templates/`,
+   `KIT=$(mktemp -d)/udd-kit && git clone --depth 1 https://github.com/AgasiArgent/user-driven-development "$KIT"`
+   and keep `$KIT` for the rest of the setup. Files below that start with `templates/`,
    `widget/`, `delivery/` or `demo/` are in `$KIT`.
    - Check: `ls "$KIT/templates/workflows"` lists four `udd-*.yml` files.
    - If it fails: ask the owner for network access or a copy of the kit.
@@ -56,18 +56,20 @@ The widget is a script that adds a "Report a problem" button. The user clicks th
 the page and writes what is wrong. It sends: text, screenshot, CSS selector of the clicked
 element, page address, console errors, failed requests. Input fields are masked.
 
-1. Copy `widget/src/` into the app as a folder (for example `feedback-widget/`). Read
-   `widget/src/index.ts` first: it shows the one script tag the widget needs. `widget/build.mjs` and
-   `widget/tsconfig.json` show how the kit bundles it. The widget has no runtime dependency; use the
-   app's existing bundler, or `esbuild` if it is already installed. Add no new npm dependency.
-2. Load the built script on every page for a signed-in user, with
-   `data-endpoint="/api/feedback"` (change the route name if the stack wants another) and
-   `data-user` set to the signed-in user's id.
+1. Build the widget inside the cloned kit, not in the app:
+   `cd "$KIT" && npm ci -w widget && npm run build -w widget`. The output is `$KIT/widget/dist/widget.js`
+   (one file). `@medv/finder` and `html2canvas-pro` are bundled into it at build time, so the app
+   needs no widget dependency and no bundler step. Copy only that one file into the app's `public/`
+   (or static) folder. Do not copy `widget/src/` into the app.
+   - Check: `ls -l` on the copied `widget.js` shows a file of a few hundred KB.
+2. Load the script on every page for a signed-in user:
+   `<script src="/widget.js" data-endpoint="/api/feedback" defer></script>` (change the route name if
+   the stack wants another). Do not set `data-user`: the user is never taken from the page (section 4, rule 1).
    - Check: open the app in a browser. The button shows on a page, and clicking an element highlights it.
    - If it fails: open the console. A warning `data-endpoint is missing` means the script tag lost its attribute.
 3. Hints by stack:
    - Next.js (App Router): put the script in `app/layout.tsx` with `next/script` (`strategy="afterInteractive"`), only when a user is signed in. Put the built file in `public/`.
-   - Vite + Express: build the widget to `dist` or `public/`, add the script tag to `index.html`, set `data-user` after login from the client.
+   - Vite + Express: build the widget to `dist` or `public/`, add the script tag to `index.html`, the script tag needs no user attribute.
    - Other: any page template that every signed-in page shares.
 
 ## 4. Add the intake route
@@ -76,19 +78,19 @@ The route receives a report and creates the issue. Pattern: `demo/lib/feedback.t
 checks) and `delivery/src/issueBody.ts` (issue text). Copy the logic, not the demo's lack of auth.
 
 Rules for the route (all are required):
-1. Only a signed-in user may call it. Return 401 otherwise.
+1. Only a signed-in user may call it. Return 401 otherwise. The user id comes from the server-side session, never from `data-user` or the request body (ignore any user field in the body). The widget sends a plain `fetch` with no custom headers, so the session must travel in a same-origin cookie. The widget has no hook for an auth header: if the app uses token auth, give the route cookie-based session access for this call.
 2. Rate limit per user (for example 10 reports per hour). Return 429 over the limit.
 3. Body limit 3 MB. Return 413 over it.
 4. Store the report in `feedback_reports` (section 4a) with status `received`. Store the screenshot in the storage from question 3, behind login. Never a public link.
-5. Create the issue with the GitHub REST API: `POST /repos/{owner}/{repo}/issues`, label `feedback`. The GitHub token lives only on the server, with the permission "Issues: write" and nothing else (a fine-grained token limited to this repository).
+5. Create the issue with the GitHub REST API: `POST /repos/{owner}/{repo}/issues`, label `feedback`. The token is named `UDD_GITHUB_TOKEN`. It is a fine-grained token for this one repository only, with the permissions "Issues: Read and write" and "Metadata: Read". The owner creates it in GitHub, Settings, Developer settings, Fine-grained tokens, and enters it in the hosting provider's environment variables (server only). It never goes into code, a committed file, or a `NEXT_PUBLIC_*` or `VITE_*` variable.
 6. Build title and body with the rules of `renderIssue` in `delivery/src/issueBody.ts`: `&`, `<`, `>` escaped; a zero-width space after every `@`; the body cut to `MAX_BODY` (65,000 characters) with `> _(truncated)_`; the user's text quoted with `>`.
-7. If GitHub fails, keep the row as `received`, answer 202, and retry on the next call to the route and when the "My feedback" page opens. Set `issue_number` when the retry succeeds.
-8. With no database (question 2): create the issue directly and tell the owner a report can be lost if GitHub is down.
+7. Answer `201` with JSON `{"id": "<report id>"}` as soon as the report is saved, even if the GitHub issue is still pending. The widget treats anything but `201` with an `id` as a failure. If GitHub fails, keep the row as `received` and retry on the next call to the route and when the "My feedback" page opens. Set `issue_number` when the retry succeeds.
+8. With no database (question 2): create the issue directly, then answer `201` with `{"id": "<issue number>"}`. If GitHub fails, answer an error status (502), not `201`, and tell the owner a report can be lost if GitHub is down.
 
 - Check: sign in, send a report from the widget. `gh issue list --label feedback` shows a new issue, its body has no raw `<` and no `@` followed directly by a letter.
 - Check: call the route without signing in. It answers 401.
 - Check (retry): set a wrong GitHub token for one local run and send a report. The row stays `received`; with the right token the next call creates the issue.
-- If it fails: read the route's server log. A 403 from GitHub means the token lacks "Issues: write" or is for another repository.
+- If it fails: read the route's server log. A 403 from GitHub means `UDD_GITHUB_TOKEN` lacks "Issues: Read and write" or is for another repository.
 
 ### 4a. The table
 
@@ -112,7 +114,7 @@ A signed-in user sees their reports and the status of each.
    Verified in production, Waiting for the developer, Declined.
 3. Retry any row without an issue number when the page opens (section 4, rule 7).
    - Check: the page shows the report from section 4 as "Received". Add the label `researched` to its issue by hand, reload: "Looked into".
-   - If it fails: the GitHub read needs the same token; "Issues: read" is enough here.
+   - If it fails: the GitHub read needs the same token; the same `UDD_GITHUB_TOKEN` works here.
 
 ## 6. Install workflows and scripts
 
@@ -121,10 +123,8 @@ A signed-in user sees their reports and the status of each.
 3. Copy `templates/scripts/udd/*.mjs` to `.udd/scripts/`.
 4. Copy `scripts/no-fly-check.mjs` from the kit root to **both** `scripts/no-fly-check.mjs` and
    `.udd/scripts/no-fly-check.mjs` (`udd-fix.yml` reads the first, `udd-routine.yml` the second).
-5. Create `.udd/no-fly.txt`: one glob per line, the paths an agent may not change alone. Start
-   from the kit's `.udd/no-fly.txt` and replace its project paths with the app's:
-   keep `.github/**`, `.udd/**`, `scripts/**`; add database migrations, auth code, the intake route,
-   the widget's masking code, `package.json` and the lock file, and the payment code if there is any.
+5. Create `.udd/no-fly.txt` from the kit's template `templates/no-fly.txt` (one glob per line, the
+   paths an agent may not change alone). Read it, then add the app's own sensitive paths that it lacks.
    Copy `.udd/no-fly-keywords.txt` and `.udd/research-ignore.txt` from the kit if they exist.
 6. Optional: copy `templates/routines/*.md` to `.udd/routines/` and follow `ROUTINES.md` to turn the routines on.
    - Check: `node --check .udd/scripts/*.mjs` is silent; `ls .github/workflows` shows `udd-research.yml udd-fix.yml udd-verify.yml udd-routine.yml`; `actionlint .github/workflows/udd-*.yml` passes if `actionlint` is installed.
@@ -161,7 +161,7 @@ Repository variables you set yourself (`gh variable set NAME --body VALUE`):
 Secrets the **owner** enters. Tell the owner the name, where to get it, and the command. You never see or print the value:
 - `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` in their terminal (Claude Pro or Max), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`.
 - `UDD_TEST_USER_EMAIL` and `UDD_TEST_USER_PASSWORD`: the production test account from question 4, set the same way.
-- The server-side GitHub token of section 4 goes into the app's own host settings, not into GitHub secrets.
+- `UDD_GITHUB_TOKEN` (section 4) goes into the app's own hosting environment variables, not into GitHub secrets and not into code.
 
 - Check: `gh variable list` shows the variables; `gh secret list` shows the secret names (never values).
 - If a secret is missing: stop and ask. Do not enable the loop until `CLAUDE_CODE_OAUTH_TOKEN` is listed.
@@ -190,6 +190,10 @@ Run each check. All six must pass.
 Then: commit on `udd-setup` (`git add` only the files you created), set `UDD_AGENT_ENABLED=true`
 with `gh variable set UDD_AGENT_ENABLED --body true`, and tell the owner to open a pull request
 for the branch and merge it. Workflows only run from the default branch.
+
+Tell the owner two limits plainly:
+- Pull requests opened by the workflows use `GITHUB_TOKEN`, so the app's own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token.
+- In a public repository every user report becomes a public issue. Users must not report secrets or personal data. The agent's research comment is sanitized but still public. Security checks run only locally there (`ROUTINES.md` section 4).
 
 Finish with a short report: what was installed, what the owner still has to do (secrets, merge,
 deploy, the production test account), and the first thing to try: send a report from the app.

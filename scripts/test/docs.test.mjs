@@ -117,3 +117,28 @@ test("README has the paste phrase word for word and links the four agent and rul
     assert.match(text, new RegExp(`\\]\\((?:\\./)?${f.replace(".", "\\.")}\\)`), `README has no link to ${f}`);
   }
 });
+
+// --- Review fixes: setup contract details ---
+
+test("SETUP.md names UDD_GITHUB_TOKEN and the 201 intake answer, and never uses $TMPDIR", () => {
+  const text = read("SETUP.md");
+  assert.ok(text.includes("`UDD_GITHUB_TOKEN`"), "SETUP.md lacks UDD_GITHUB_TOKEN");
+  assert.match(text, /\b201\b/);
+  assert.ok(!text.includes("$TMPDIR"), "SETUP.md still uses $TMPDIR");
+  assert.ok(!/\b202\b/.test(text), "SETUP.md still mentions 202");
+  assert.ok(text.includes("mktemp -d"), "SETUP.md does not use mktemp -d");
+  assert.ok(text.includes("npm run build -w widget"), "SETUP.md lacks the widget build command");
+  assert.ok(text.includes("templates/no-fly.txt"), "SETUP.md lacks the no-fly template path");
+  assert.match(text, /GITHUB_TOKEN/);
+  assert.match(text, /public issue/i);
+});
+
+test("README states the spec section 10 numbers in its wording", () => {
+  const text = read("README.md");
+  assert.ok(text.includes("the loop itself brought 121 of 479 issues to completion over 14 weeks"));
+  assert.ok(text.includes("12 days of downtime with no errors"));
+  assert.ok(text.includes("467 of 529"));
+  assert.match(text, /Limits/);
+  assert.match(text, /public issue/i);
+  assert.ok(!/[–—]/.test(text), "README has em or en dashes");
+});
