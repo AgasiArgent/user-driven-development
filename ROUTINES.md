@@ -24,8 +24,8 @@ Schedule: Monday 06:00 UTC (`cron: "0 6 * * 1"`).
 
 ## 2. Turn a routine off
 
-Remove it from both `routine: [...]` lists in `.github/workflows/udd-routine.yml`
-(`agent` and, for dead code and duplicates, `publish-pr`). To stop everything, set
+Remove it from every `routine: [...]` list in `.github/workflows/udd-routine.yml`
+(`agent` and, for dead code and duplicates, `verify` and `publish-pr`). To stop everything, set
 `UDD_AGENT_ENABLED` to anything but `true`.
 - Check: `gh workflow run udd-routine.yml` no longer starts the removed routine.
 
@@ -36,8 +36,29 @@ Remove it from both `routine: [...]` lists in `.github/workflows/udd-routine.yml
 2. A rejected finding goes into `.udd/known-findings.json` and is never proposed again:
    `[{"key": "...", "reason": "why", "date": "YYYY-MM-DD"}]`. The key is in the PR text or issue body.
 3. Changes pass the project tests (`UDD_TEST_CMD`, default `npm test`) and the no-fly check.
+   The tests run in the `verify` job, which has no secrets, no cache and a read-only token.
 4. Findings arrive where people look: a draft PR or an issue, never a build artifact.
 5. Success is merged PRs and closed issues, not runs. `WEEKLY.md` reports it.
+
+## 3a. Who holds which key
+
+The job with the model token (`agent`) runs no project code: no install, no tests, no `npm`
+scripts, and the agent has no shell. Its result (a patch, or `findings.json`) is uploaded first
+and its sha256 is recorded as a job output. Then:
+
+- `verify` (no secrets, `permissions: contents: read`, no `cache:`, `persist-credentials: false`)
+  checks the sha256, applies the patch to a fresh checkout, runs `npm ci` and `UDD_TEST_CMD`,
+  and uploads only a small outcome file.
+- `audit` (no secrets) runs `npm audit --json` on the lockfile; the agent receives only the JSON.
+- `publish-pr` and `publish-security` check the sha256 again. `publish-pr` uses copies of the
+  no-fly checker and its list taken before the patch is applied, and lists changed files with
+  `git -c core.quotePath=false diff --cached --name-only -z --no-renames`, passed to
+  `no-fly-check.mjs -z`.
+
+Pull requests opened with the workflow `GITHUB_TOKEN` do not trigger other workflows, so the
+app's own CI does not run on a routine PR. The owner runs it by hand before merging, or
+configures a GitHub App token for the PR step
+(https://docs.github.com/en/actions/concepts/security/github_token).
 
 Labels: `routine`, `routine:dead-code`, `routine:duplicates`, `routine:security`, `security`.
 
@@ -46,8 +67,9 @@ Labels: `routine`, `routine:dead-code`, `routine:duplicates`, `routine:security`
 It checks seven things: input validation on routes, per-user data access (including Supabase
 RLS), secret keys in the browser, user text as HTML, SQL built from input, `npm audit`, and
 secrets in git. The agent writes `udd-findings.json`; the workflow drops anything already in
-`.udd/known-findings.json` and opens one issue per new finding with the label `security`
-(at most 20 per run). A secret in git becomes an issue titled "Rotate this key"; no PR, and the
+`.udd/known-findings.json` and opens at most ONE issue per run, titled "Security check
+<date of the run>", with a checklist of the new findings (at most 20) and the labels
+`routine`, `routine:security`, `security`. No new findings means no issue. A secret in git becomes an issue titled "Rotate this key"; no PR, and the
 value is never printed.
 
 Fixing comes later and only on request: first the finding, then a person decides.
@@ -59,14 +81,13 @@ in a public issue or PR. The `publish-security` job runs only when `private == '
 the agent step is skipped too. Run the security check from `WEEKLY.md` locally instead.
 Findings stay in the terminal, and a fix is a normal commit that does not describe the hole.
 
-Why not draft security advisories from the workflow? Checked in the GitHub docs: the workflow
-`GITHUB_TOKEN` is documented as a GitHub App installation token, and the `permissions:` key has
-no entry for repository security advisories. The endpoint
-`POST /repos/{owner}/{repo}/security-advisories` needs, for a GitHub App or fine-grained token,
-the "Repository security advisories" write permission, and the caller must be a security manager
-or administrator. The docs do not say `GITHUB_TOKEN` can do this; the only documented route is
-a separate GitHub App installation token. So the public variant stays local-only.
-(Status: not stated in the docs, not tested.)
+Why not draft security advisories from the workflow? `GITHUB_TOKEN` cannot create draft
+security advisories: the `permissions:` key has no entry for repository security advisories.
+The endpoint `POST /repos/{owner}/{repo}/security-advisories` needs a GitHub App installation
+token with "Repository security advisories: write"
+(https://docs.github.com/en/rest/security-advisories/repository-advisories,
+https://docs.github.com/en/actions/concepts/security/github_token). So public repositories run
+the security check locally via `WEEKLY.md`, unless the owner sets up such an App.
 
 Sources:
 - https://docs.github.com/en/rest/security-advisories/repository-advisories
