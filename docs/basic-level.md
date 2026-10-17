@@ -24,7 +24,7 @@ widget -> your database -> delivery -> GitHub issue (label: feedback)
 |---|---|---|
 | `templates/workflows/udd-research.yml` | An issue with `feedback` is opened or labelled | The agent reads the report and the code with read-only tools and writes a comment: likely files, duplicates, open questions. Its output is cleaned before it is posted. |
 | `templates/workflows/udd-fix.yml` | A person adds `approved` to an issue that has `feedback` | Job kinds: **guard** decides and marks the issue `in-progress`. **agent-N** holds the model token and edits files; it installs nothing and runs nothing, and it must add one test tagged `@udd-<issue number>`. **red-N** has no model token and no write token: it applies only the test files of the patch to the base commit and runs the test against `UDD_PROD_URL`, where it must fail. Up to three attempts. **verdict-N** reads the red report with the trusted `red-first.mjs` and runs the patch check (exactly one test tagged `@udd-<n>` and a change to app code) to decide whether another attempt is needed. **publish** runs no project code: it checks the patch hash, repeats both decisions with copies of the trusted scripts, checks no-fly zones, and opens a draft PR; the label stays `in-progress` until the preview check passes. |
-| `templates/workflows/udd-preview.yml` | A non-production deployment succeeds (Vercel reports these to GitHub by itself), or by hand with `url` and `issue` | Finds the `udd/fix-<n>` pull request that owns the deployed commit, runs its tagged test against the preview address under the test account, and the trusted checker decides. A pass labels the issue `fix-ready`; a failure labels it `needs-human`. The address must be https and its host must end with `UDD_PREVIEW_HOST_SUFFIX`. `UDD_PREVIEW_BYPASS` reaches the test as an environment variable together with `UDD_PREVIEW_HOST`; the Playwright fixtures send it as `x-vercel-protection-bypass` only to that host. No model is involved. |
+| `templates/workflows/udd-preview.yml` | `udd-fix.yml` starts it automatically (workflow dispatch with `issue`) after it creates the draft PR; a non-production deployment succeeding (Vercel reports these to GitHub by itself) also starts it; or by hand with `issue` and, optionally, `url` | Without a `url` it polls the GitHub deployments of the PR head commit every 30 seconds for up to 20 minutes and uses the address of the first successful non-production one. Finds the `udd/fix-<n>` pull request that owns the deployed commit, runs its tagged test against the preview address under the test account, and the trusted checker decides. A pass labels the issue `fix-ready`; a failure labels it `needs-human`. The address must be https and its host must end with `UDD_PREVIEW_HOST_SUFFIX`. `UDD_PREVIEW_BYPASS` reaches the test as an environment variable together with `UDD_PREVIEW_HOST`; the Playwright fixtures send it as `x-vercel-protection-bypass` only to that host. No model is involved. |
 | `templates/workflows/udd-verify.yml` | A production deployment succeeds, or by hand | Runs the tagged tests of shipped issues against `UDD_PROD_URL`. A pass labels the issue `verified` and closes it. A failure reopens it, labels it `needs-human` and removes `shipped`. If the fix is not deployed yet, the issue is skipped. |
 | `templates/workflows/udd-routine.yml` | Weekly, or by hand | Runs the routines in [ROUTINES.md](../ROUTINES.md). |
 
@@ -38,7 +38,7 @@ widget -> your database -> delivery -> GitHub issue (label: feedback)
 | `templates/scripts/udd/routine-guard.mjs` | Whether a routine may run (one open item at most) and which findings are new. |
 | `templates/scripts/udd/sanitize.mjs` | Cleans agent and reporter text: HTML is escaped and each `@` gets a zero-width space, so text can neither ping people nor wake a bot. The issue body is cut at 65,000 characters. |
 | `templates/scripts/udd/status.mjs` | Maps issue labels to the status the reporter sees. |
-| `scripts/no-fly-check.mjs` | Fails if a patch touches a path listed in `.udd/no-fly.txt` or matches `.udd/no-fly-keywords.txt`. Rename detection is off, so moving a protected file is caught. |
+| `templates/scripts/udd/no-fly-check.mjs` | Fails if a patch touches a path that matches a glob in `.udd/no-fly.txt`. It matches file paths only, never file contents. Rename detection is off, so moving a protected file is caught. |
 
 ## Settings
 
@@ -49,10 +49,12 @@ Repository variables:
 | Name | Default | Meaning |
 |---|---|---|
 | `UDD_AGENT_ENABLED` | off | `true` turns the agent workflows on. |
+| `UDD_INSTALL_CMD` | `npm ci` | Install command, frozen-lockfile form for your package manager (`pnpm install --frozen-lockfile`, `yarn install --immutable`, `bun install --frozen-lockfile`). Run with `bash -c`. |
 | `UDD_TEST_CMD` | `npm test` | Unit tests. |
 | `UDD_E2E_CMD` | `npx playwright test` | Browser tests. |
 | `UDD_TEST_GLOB` | `**/*.spec.ts,**/*.test.ts,e2e/**` | Which paths count as tests. Only changes to these are kept on the base when checking that the test fails first. |
 | `UDD_PREVIEW_HOST_SUFFIX` | none | Allowed suffix of preview hosts, starting with a dot (Vercel: `.vercel.app`). Without it `udd-preview.yml` tests nothing. |
+| `UDD_RESEARCH_DAILY_CAP` | `20` | Most issues researched per day. Research runs automatically on every report, so this limits subscription use. |
 | `UDD_PROD_URL` | none | Production address: the fix test must fail there, and `udd-verify.yml` checks it after the deploy. Without it the workflows stop. |
 
 Secrets: `UDD_PREVIEW_BYPASS` (optional, Vercel Protection Bypass for Automation), `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, uses your subscription), `UDD_TEST_USER_EMAIL`, `UDD_TEST_USER_PASSWORD`. `ANTHROPIC_API_KEY` works as an alternative to the token; if you use it, set a monthly spend limit on the key in the Anthropic console.

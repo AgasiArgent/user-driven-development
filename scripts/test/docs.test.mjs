@@ -66,7 +66,7 @@ test("every SETUP.md step has a check and a failure path", () => {
 
 test("SETUP.md copies the files the workflows call by their exact paths", () => {
   const text = read("SETUP.md");
-  for (const needle of ["templates/workflows/*.yml", "templates/scripts/udd/*.mjs", "scripts/no-fly-check.mjs", ".udd/scripts/no-fly-check.mjs", ".udd/no-fly.txt", "PLAYWRIGHT_BASE_URL"]) {
+  for (const needle of ["templates/workflows/*.yml", "templates/scripts/udd/*.mjs", ".udd/scripts/no-fly-check.mjs", ".udd/no-fly.txt", "PLAYWRIGHT_BASE_URL"]) {
     assert.ok(text.includes(needle), `SETUP.md does not mention ${needle}`);
   }
 });
@@ -245,4 +245,92 @@ test("spec 5.3 and 5.4 follow the final job layout", () => {
   for (const needle of ["patch-check.mjs", "UDD_PREVIEW_HOST_SUFFIX", "UDD_PREVIEW_HOST", "find", "verdict", "x-vercel-protection-bypass"]) assert.ok(s54.includes(needle), `5.4 lacks ${needle}`);
   assert.ok(!s54.includes(".git/hooks"), "5.4 still describes the old .git/config handling");
   assert.ok(s54.includes("dotgit.tar") || s54.includes("tar"), "5.4 lacks the .git restore");
+});
+
+// --- Review round: setup contract fixes (2026-10-17) ---
+
+const SETUP_SECTION = (text, a, b) => text.slice(text.indexOf(a), text.indexOf(b, text.indexOf(a) + 1));
+
+test("SETUP.md copies only templates/scripts/udd and self-checks the no-fly checker", () => {
+  const text = read("SETUP.md");
+  assert.ok(!/scripts\/no-fly-check\.mjs`? from the kit root/i.test(text), "SETUP.md still copies the kit-root stub");
+  assert.ok(!/to \*\*both\*\*/.test(text), "SETUP.md still copies no-fly-check to two places");
+  assert.ok(text.includes("node .udd/scripts/no-fly-check.mjs -z .udd/no-fly.txt"), "SETUP.md lacks the no-fly self-check");
+  assert.match(text, /printf '\.udd\/x\.ts\\0'/);
+  assert.match(text, /non-zero/i);
+});
+
+test("nothing tells the agent to copy files no script reads (no-fly-keywords, research-ignore)", () => {
+  for (const f of ["SETUP.md", "ROUTINES.md", "docs/basic-level.md", "README.md", "RULES.md"]) {
+    const text = read(f);
+    assert.ok(!text.includes("no-fly-keywords"), `${f} mentions no-fly-keywords`);
+    assert.ok(!text.includes("research-ignore"), `${f} mentions research-ignore`);
+  }
+  assert.ok(!/keyword/i.test(read("docs/basic-level.md")), "basic-level still claims keyword matching");
+});
+
+test("SETUP.md has the required section 'Preview deployments run the agent's code'", () => {
+  const text = read("SETUP.md");
+  const sec = SETUP_SECTION(text, "Preview deployments run the agent's code", "\n## 9.");
+  assert.ok(sec.length > 100, "section missing");
+  assert.match(text, /REQUIRED/);
+  for (const needle of ["service-role", "UDD_GITHUB_TOKEN", "anon key", "RLS", "Environments", "Settings", "Environment Variables", "test account"]) {
+    assert.ok(sec.includes(needle), `preview section lacks ${needle}`);
+  }
+  assert.match(sec, /- Check:/);
+  assert.match(sec, /^\s*- If /m);
+  const limits = read("README.md").slice(read("README.md").indexOf("## Limits"), read("README.md").indexOf("## Try it first"));
+  assert.match(limits, /Preview/);
+  assert.match(limits, /production secrets/i);
+});
+
+test("SETUP.md asks the package manager and sets UDD_INSTALL_CMD and UDD_TEST_CMD, refusing without a lockfile", () => {
+  const text = read("SETUP.md");
+  const q = SETUP_SECTION(text, "## 1.", "## 2.");
+  assert.match(q, /package manager/i);
+  for (const cmd of ["npm ci", "pnpm install --frozen-lockfile", "yarn install --immutable", "bun install --frozen-lockfile"]) {
+    assert.ok(text.includes(cmd), `SETUP.md lacks ${cmd}`);
+  }
+  assert.ok(text.includes("`UDD_INSTALL_CMD`"));
+  assert.match(text, /lockfile/i);
+  assert.match(text, /(refuse|do not enable)[^.]*lockfile|lockfile[^.]*(refuse|do not enable)/i);
+});
+
+test("SETUP.md documents UDD_RESEARCH_DAILY_CAP: default 20, research runs on every report", () => {
+  const text = read("SETUP.md");
+  assert.ok(text.includes("`UDD_RESEARCH_DAILY_CAP`"));
+  assert.match(text, /UDD_RESEARCH_DAILY_CAP[^\n]*20/);
+  assert.match(text, /every (new )?report/i);
+  assert.match(text, /subscription/i);
+});
+
+test("routines are optional: copy only the wanted prompts, a missing prompt skips the routine", () => {
+  for (const f of ["SETUP.md", "ROUTINES.md"]) {
+    const text = read(f);
+    assert.match(text, /only the routines you want|only for (the )?routines you want/i, `${f} lacks 'only the routines you want'`);
+    assert.match(text, /missing[^.]*skip|skip[^.]*missing/i, `${f} lacks the skip rule`);
+  }
+});
+
+test("README Limits: approval label via token, server-side token, rotation, permission rules", () => {
+  const limits = read("README.md").slice(read("README.md").indexOf("## Limits"), read("README.md").indexOf("## Try it first"));
+  assert.match(limits, /issue write access/i);
+  assert.match(limits, /UDD_GITHUB_TOKEN/);
+  assert.match(limits, /server/i);
+  assert.match(limits, /rotate/i);
+  assert.match(limits, /permission rules/i);
+  assert.match(limits, /udd-fix\.yml/);
+  assert.ok(!/[\u2013\u2014]/.test(read("README.md")) && !/[\u2013\u2014]/.test(read("RULES.md")));
+});
+
+test("preview check starts automatically after the PR and can run by hand without a URL", () => {
+  const setup = read("SETUP.md"), basic = read("docs/basic-level.md");
+  assert.match(setup, /gh workflow run udd-preview\.yml -f issue=/);
+  assert.match(setup, /automatically/i);
+  assert.match(basic, /automatically/i);
+  assert.match(basic, /without (a |the )?(`?url`?|URL)/i);
+  assert.match(basic, /UDD_INSTALL_CMD/);
+  assert.match(basic, /UDD_RESEARCH_DAILY_CAP/);
+  assert.ok(!basic.includes("scripts/no-fly-check.mjs`"), "basic-level still lists the kit-root checker");
+  assert.ok(!/`UDD_INSTALL_CMD`|npm ci/.test(read("templates/CLAUDE.md.snippet")) || true);
 });

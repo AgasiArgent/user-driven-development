@@ -71,6 +71,10 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 - Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token. The preview check is a separate workflow and still runs.
 - The tests run against production and the preview under a test account. Give it no real data and no admin rights.
 - In a public repository every user report becomes a public issue. Users should not report secrets or personal data. The agent's research comment is cleaned, but it is public too. Security checks run only on your machine there.
+- **Preview deployments run the agent's code.** On Vercel every pushed `udd/fix-*` branch is built and deployed before you review it. The Preview environment must hold no production secrets: a separate Supabase project (or only the anon key with RLS on), no service-role key, no `UDD_GITHUB_TOKEN`, no payment or email keys scoped to Preview. [SETUP.md](SETUP.md) section 8b says how to check.
+- The `approved` label is the gate, but anyone holding a token with issue write access can add it too, including `UDD_GITHUB_TOKEN` on your app server. Keep that token on the server only, and rotate it if the server is compromised.
+- The agent's file access is limited to the repository checkout by permission rules (see the comment at the top of `udd-fix.yml`). That is a permission rule, not a sandbox.
+- Research runs automatically on every report, with no approval. `UDD_RESEARCH_DAILY_CAP` (default 20) limits how much of your subscription that can use per day.
 - The database step is optional. Without one, a report can be lost if GitHub is down.
 
 ## Try it first

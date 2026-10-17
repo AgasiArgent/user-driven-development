@@ -52,7 +52,7 @@ User pins feedback in the app
 
 **Why:** A sentence in a prompt can be argued away by the report text. A check on the patch cannot. The check runs on the diff that would be committed, with a copy of the checker taken from the main branch.
 
-**Enforced by:** `.udd/no-fly.txt`, `scripts/no-fly-check.mjs`
+**Enforced by:** `.udd/no-fly.txt`, `templates/scripts/udd/no-fly-check.mjs`
 
 ## 5. Write the failing test first
 

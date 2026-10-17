@@ -8,9 +8,10 @@ Every step: what to do, how to check, what to do if it fails.
 ## 1. Install
 
 1. Copy `templates/workflows/udd-routine.yml` to `.github/workflows/udd-routine.yml`.
-   Copy `templates/routines/*.md` to `.udd/routines/`.
-   Copy `routine-guard.mjs`, `sanitize.mjs` and `no-fly-check.mjs` to `.udd/scripts/`.
-   - Check: `ls .udd/routines .udd/scripts` shows all of them; `actionlint` passes.
+   Copy `templates/routines/*.md` to `.udd/routines/` only for the routines you want (`dead-code.md`,
+   `duplicates.md`, `security.md`). A routine whose prompt is missing is skipped with a notice, not an error.
+   Copy `routine-guard.mjs`, `sanitize.mjs` and `no-fly-check.mjs` from `templates/scripts/udd/` to `.udd/scripts/`.
+   - Check: `ls .udd/routines .udd/scripts` shows the prompts you chose and the scripts; `actionlint` passes.
    - If it fails: the workflow calls files by these exact paths. Do not rename them.
 2. Set the repository variable `UDD_AGENT_ENABLED=true` and the secret `CLAUDE_CODE_OAUTH_TOKEN`
    (a Claude Pro or Max subscription token; `ANTHROPIC_API_KEY` also works).
@@ -47,7 +48,7 @@ scripts, and the agent has no shell. Its result (a patch, or `findings.json`) is
 and its sha256 is recorded as a job output. Then:
 
 - `verify` (no secrets, `permissions: contents: read`, no `cache:`, `persist-credentials: false`)
-  checks the sha256, applies the patch to a fresh checkout, runs `npm ci` and `UDD_TEST_CMD`,
+  checks the sha256, applies the patch to a fresh checkout, runs `UDD_INSTALL_CMD` (default `npm ci`) and `UDD_TEST_CMD`,
   and uploads only a small outcome file.
 - `audit` (no secrets) runs `npm audit --json` on the lockfile; the agent receives only the JSON.
 - `publish-pr` and `publish-security` check the sha256 again. `publish-pr` uses copies of the
