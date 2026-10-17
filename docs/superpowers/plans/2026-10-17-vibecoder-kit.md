@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-17-vibecoder-kit-design.md`
 
+> **Update 2026-10-17 (after review rounds 1–4):** the loop mechanics in Tasks 5–6 below are superseded by spec §5.3–§5.4: red on production, green on the preview (`udd-preview.yml`), pre-check job before any agent code runs, `UDD_INSTALL_CMD`, `UDD_RESEARCH_DAILY_CAP`, `UDD_PREVIEW_HOST_SUFFIX`. See commits 58378f0, 146fede, 8b0795e. Tasks 11–12 are unchanged and still gated.
+
 ## Global Constraints
 
 - Всё работает на подписке Claude Pro/Max: в шаблонах `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`; `anthropic_api_key` остаётся необязательной альтернативой.

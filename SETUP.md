@@ -192,7 +192,7 @@ export { expect } from "@playwright/test";
 
 Repository variables you set yourself (`gh variable set NAME --body VALUE`):
 - `UDD_AGENT_ENABLED`: set `true` only at the very end (section 9).
-- `UDD_INSTALL_CMD`: the install command from question 1, always the frozen-lockfile form: `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable` or `npm install -g bun && bun install --frozen-lockfile` (corepack, which the workflows enable, covers pnpm and yarn but not bun). The workflows run it with `bash -c`. Default `npm ci`; set it for every other manager.
+- `UDD_INSTALL_CMD`: the install command from question 1, always the frozen-lockfile form: `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable` or `npm install -g bun && bun install --frozen-lockfile` (corepack, which the workflows enable, covers pnpm and yarn but not bun). For pnpm and yarn, `package.json` must declare `"packageManager"` (for example `"pnpm@9.12.0"`; read the version with `pnpm --version`), otherwise corepack stops to ask and the install fails in CI. Add it if it is missing. The workflows run it with `bash -c`. Default `npm ci`; set it for every other manager.
 - `UDD_TEST_CMD`: the app's unit test command for that manager (default `npm test`; for example `pnpm test`, `yarn test`, `bun test`).
 - `UDD_E2E_CMD`: default `npx playwright test`.
 - `UDD_TEST_GLOB`: which files count as tests (default `**/*.spec.ts,**/*.test.ts,e2e/**`).
