@@ -1,0 +1,235 @@
+# Weekly routines: dead code, duplicates, security. Off by default: set the repository
+# variable UDD_AGENT_ENABLED=true and the secret CLAUDE_CODE_OAUTH_TOKEN. See ROUTINES.md.
+#
+# Same split as udd-fix, so code written by the agent never runs next to a write token:
+#   meta     — reads whether the repository is private
+#   agent    — guard, then the agent reads and edits files; read-only token, no stored credentials
+#   publish  — applies the patch (draft PR) or turns findings into issues; never runs agent code
+name: udd-routine
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: udd-routine
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    if: vars.UDD_AGENT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      private: ${{ steps.repo.outputs.private }}
+    steps:
+      # Asked from the API: a scheduled run has no reliable event payload to read this from.
+      - id: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" >> "$GITHUB_OUTPUT"
+
+  agent:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        routine: [dead-code, duplicates, security]
+    env:
+      ROUTINE: ${{ matrix.routine }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Rule 7.2.1: at most one open PR or issue per routine. Rule 7.3: no security run on a public repository.
+      - name: Guard
+        id: guard
+        env:
+          PRIVATE: ${{ needs.meta.outputs.private }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          open=$( { gh issue list --state open --label "routine:$ROUTINE" --json labels; gh pr list --state open --label "routine:$ROUTINE" --json labels; } \
+            | jq -s '[.[][] | {labels: [.labels[].name]}]')
+          run=$(jq -n --arg r "$ROUTINE" --argjson o "$open" '{routine: $r, openItems: $o}' | node .udd/scripts/routine-guard.mjs)
+          if [ "$ROUTINE" = "security" ] && [ "$PRIVATE" != "true" ]; then run=false; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "$run" > "$RUNNER_TEMP/out/run"
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.guard.outputs.run == 'true'
+        run: npm ci
+
+      # Run before the agent so the agent only reads the result (no shell, no model key next to a command).
+      - name: Dependency audit
+        if: steps.guard.outputs.run == 'true' && matrix.routine == 'security'
+        run: npm audit --json > udd-audit.json || true
+
+      - name: Load the routine prompt
+        if: steps.guard.outputs.run == 'true'
+        id: prompt
+        run: |
+          { echo "text<<UDD_EOF"; cat ".udd/routines/$ROUTINE.md"; echo "UDD_EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Routine agent
+        if: steps.guard.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: |
+            --max-turns 40
+            --allowedTools "Edit,Write,Read,Glob,Grep"
+
+      # Saved before any project test runs, so tests cannot change the patch.
+      - name: Save the result
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          if [ "$ROUTINE" = "security" ]; then
+            [ -f udd-findings.json ] && cp udd-findings.json "$RUNNER_TEMP/out/findings.json" || echo "[]" > "$RUNNER_TEMP/out/findings.json"
+          else
+            git add -A
+            git diff --cached --binary --no-renames > "$RUNNER_TEMP/out/agent.patch"
+          fi
+
+      - name: Project tests
+        if: steps.guard.outputs.run == 'true' && matrix.routine != 'security'
+        id: tests
+        continue-on-error: true
+        env:
+          UDD_TEST_CMD: ${{ vars.UDD_TEST_CMD || 'npm test' }}
+        run: bash -c "$UDD_TEST_CMD"
+
+      - name: Record test outcome
+        if: steps.guard.outputs.run == 'true' && matrix.routine != 'security'
+        env:
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: echo "$OUTCOME" > "$RUNNER_TEMP/out/tests"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routine-${{ matrix.routine }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+
+  publish-pr:
+    needs: agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        routine: [dead-code, duplicates]
+    env:
+      ROUTINE: ${{ matrix.routine }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The checker and its list come from the default branch before the patch is applied.
+      - name: Keep a trusted copy of the no-fly check
+        run: cp .udd/scripts/no-fly-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: routine-${{ matrix.routine }}
+          path: ${{ runner.temp }}/in
+
+      - name: Apply the change
+        id: apply
+        run: |
+          in="$RUNNER_TEMP/in"
+          if [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git switch -c "udd/routine-$ROUTINE-$GITHUB_RUN_ID"
+          git apply --index "$in/agent.patch"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: No-fly zones
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          git diff --cached --name-only --no-renames | node "$RUNNER_TEMP/no-fly-check.mjs" "$RUNNER_TEMP/no-fly.txt"
+
+      # Principle 9: the agent stops at a draft PR; a human reviews and merges.
+      - name: Draft pull request
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          branch="udd/routine-$ROUTINE-$GITHUB_RUN_ID"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Routine $ROUTINE (weekly, written by the coding agent)"
+          git push -q origin "$branch"
+          gh label create routine --force >/dev/null
+          gh label create "routine:$ROUTINE" --force >/dev/null
+          {
+            echo "Weekly routine **$ROUTINE**, written by the coding agent. Review it like any other change before merging."
+            echo
+            echo "Project tests in the agent job: **$(cat "$RUNNER_TEMP/in/tests")**"
+            echo
+            echo "If you reject a change, add its key to \`.udd/known-findings.json\` so it is not proposed again."
+          } > "$RUNNER_TEMP/pr.md"
+          gh pr create --draft --head "$branch" --title "Routine: $ROUTINE" --body-file "$RUNNER_TEMP/pr.md" \
+            --label routine --label "routine:$ROUTINE"
+
+  publish-security:
+    needs: [meta, agent]
+    # Review Focus 5: findings about a public repository never go into an issue or a PR.
+    if: needs.meta.outputs.private == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: routine-security
+          path: ${{ runner.temp }}/in
+
+      - name: Open one issue per new finding
+        run: |
+          in="$RUNNER_TEMP/in"
+          [ "$(cat "$in/run")" = "true" ] || exit 0
+          known='[]'; [ -f .udd/known-findings.json ] && known=$(cat .udd/known-findings.json)
+          new=$(jq -n --slurpfile f "$in/findings.json" --argjson k "$known" '{findings: $f[0], known: $k}' | node .udd/scripts/routine-guard.mjs filter)
+          gh label create security --force >/dev/null
+          gh label create routine --force >/dev/null
+          gh label create routine:security --force >/dev/null
+          clean() { node .udd/scripts/sanitize.mjs; }
+          echo "$new" | jq -c '.[]' | head -20 | while read -r f; do
+            title=$(printf %s "$f" | jq -r '.title // "Finding"' | tr -d '\n' | clean | cut -c1-120)
+            file=$(printf %s "$f" | jq -r '.file // "?"' | tr -d '\n' | clean)
+            line=$(printf %s "$f" | jq -r '.line // 0' | tr -dc '0-9')
+            sev=$(printf %s "$f" | jq -r '.severity // "unknown"' | tr -d '\n' | clean)
+            key=$(printf %s "$f" | jq -r '.key' | tr -d '\n' | clean)
+            why=$(printf %s "$f" | jq -r '.explanation // ""' | clean | head -c 4000)
+            # A secret in git is rotated, never "fixed" with a PR.
+            case "$key" in secret-*) title="Rotate this key: $file";; esac
+            { echo "**Severity:** $sev"; echo "**Where:** \`$file\`:$line"; echo "**Key:** \`$key\`"; echo; echo "$why"; echo; \
+              echo "Nothing is fixed automatically: a person decides what happens next. To stop seeing this finding, add its key to \`.udd/known-findings.json\`."; } > "$RUNNER_TEMP/issue.md"
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md" --label security --label routine --label routine:security
+          done
