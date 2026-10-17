@@ -44,17 +44,55 @@ test("+++ header line is not an added line", () => {
   const diff = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/@udd-7.ts\n@@ -0,0 +1 @@\n+x\n`;
   assert.equal(checkPatch({ files: ["src/a.ts"], diff, tag: "@udd-7", testGlobs: GLOBS }).reason, "no-tagged-test");
 });
-test("CLI: reads a patch file, file list from diff headers, exit codes", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pc-"));
-  const good = join(dir, "good.patch");
-  const bad = join(dir, "bad.patch");
-  writeFileSync(good, file("e2e/a.spec.ts", [T]) + file("src/my app.ts", ["x"]));
-  writeFileSync(bad, file("e2e/a.spec.ts", [T]));
-  const run = (p) => spawnSync("node", ["templates/scripts/udd/patch-check.mjs", p, "udd-7", "**/*.spec.ts,tests/**"], { encoding: "utf8" });
-  let r = run(good);
-  assert.deepEqual([r.status, r.stdout.trim()], [0, "ok"]);
-  r = run(bad);
-  assert.deepEqual([r.status, r.stdout.trim()], [1, "no-app-change"]);
-  r = run(join(dir, "missing.patch"));
-  assert.equal(r.status, 1);
+test("path containing ' b/' is accounted for by the file list", () => {
+  const f = "src/a b/c.ts";
+  const diff = file("e2e/a.spec.ts", [T]) + file(f, ["x"]);
+  const r = checkPatch({ files: ["e2e/a.spec.ts", f], diff, tag: "@udd-7", testGlobs: GLOBS });
+  assert.deepEqual([r.ok, r.reason, r.appFiles], [true, "ok", [f]]);
+});
+test("quoted diff --git header fails closed: ambiguous-header", () => {
+  const diff = file("e2e/a.spec.ts", [T]) + `diff --git "a/src/\\303\\251.ts" "b/src/\\303\\251.ts"\n--- a/x\n+++ b/x\n${hunk(["x"])}`;
+  const r = checkPatch({ files: ["e2e/a.spec.ts", "src/\u00e9.ts"], diff, tag: "@udd-7", testGlobs: GLOBS });
+  assert.deepEqual([r.ok, r.reason], [false, "ambiguous-header"]);
+});
+test("header not in the file list fails closed: ambiguous-header", () => {
+  const diff = file("e2e/a.spec.ts", [T]) + file("src/hidden.ts", ["x"]);
+  const r = checkPatch({ files: ["e2e/a.spec.ts", "src/app.ts"], diff, tag: "@udd-7", testGlobs: GLOBS });
+  assert.equal(r.reason, "ambiguous-header");
+});
+test("tag on a '+diff --git' content line is not a header", () => {
+  const diff = file("e2e/a.spec.ts", [T, "diff --git a/zzz b/zzz"]) + file("src/a.ts", ["x"]);
+  assert.equal(checkPatch({ files: ["e2e/a.spec.ts", "src/a.ts"], diff, tag: "@udd-7", testGlobs: GLOBS }).reason, "ok");
+});
+
+const dir = mkdtempSync(join(tmpdir(), "pc-"));
+const cli = (patchText, files, tag = "udd-7", globs = "**/*.spec.ts,tests/**", extra) => {
+  const patch = join(dir, "p.patch");
+  const list = join(dir, "files.z");
+  writeFileSync(patch, patchText);
+  writeFileSync(list, files.join("\0") + (files.length ? "\0" : ""));
+  const args = extra ?? ["--files-z", list];
+  const r = spawnSync("node", ["templates/scripts/udd/patch-check.mjs", patch, tag, globs, ...args], { encoding: "utf8" });
+  return { status: r.status, json: JSON.parse(r.stdout) };
+};
+test("CLI: --files-z, JSON output, path with spaces", () => {
+  const f = "src/my b/app.ts";
+  let r = cli(file("e2e/a.spec.ts", [T]) + file(f, ["x"]), ["e2e/a.spec.ts", f]);
+  assert.deepEqual([r.status, r.json], [0, { ok: true, reason: "ok", testFiles: ["e2e/a.spec.ts"], appFiles: [f] }]);
+  r = cli(file("e2e/a.spec.ts", [T]), ["e2e/a.spec.ts"]);
+  assert.deepEqual([r.status, r.json.ok, r.json.reason], [1, false, "no-app-change"]);
+});
+test("CLI: globs are trimmed and may contain spaces", () => {
+  const r = cli(file("my tests/a.ts", [T]) + file("src/a.ts", ["x"]), ["my tests/a.ts", "src/a.ts"], "udd-7", " my tests/** , **/*.spec.ts ");
+  assert.deepEqual([r.status, r.json.testFiles], [0, ["my tests/a.ts"]]);
+});
+test("CLI: missing --files-z fails closed", () => {
+  const r = cli(file("e2e/a.spec.ts", [T]) + file("src/a.ts", ["x"]), [], "udd-7", "tests/**", []);
+  assert.deepEqual([r.status, r.json.ok, r.json.reason], [1, false, "files-list-required"]);
+});
+test("CLI: unreadable patch or file list fails closed", () => {
+  let r = spawnSync("node", ["templates/scripts/udd/patch-check.mjs", join(dir, "nope"), "udd-7", "x", "--files-z", join(dir, "files.z")], { encoding: "utf8" });
+  assert.deepEqual([r.status, JSON.parse(r.stdout).reason], [1, "unreadable-patch"]);
+  r = spawnSync("node", ["templates/scripts/udd/patch-check.mjs", join(dir, "p.patch"), "udd-7", "x", "--files-z", join(dir, "nope")], { encoding: "utf8" });
+  assert.deepEqual([r.status, JSON.parse(r.stdout).reason], [1, "files-list-unreadable"]);
 });
