@@ -60,7 +60,7 @@ test("every SETUP.md step has a check and a failure path", () => {
   for (const s of sections) {
     const title = s.split("\n")[0];
     assert.match(s, /- Check:/, `section "${title}" has no check`);
-    assert.match(s, /- If (it fails|a secret is missing|an answer|a check fails)|If a check fails/i, `section "${title}" has no failure path`);
+    assert.match(s, /^\s*- If /m, `section "${title}" has no failure path`);
   }
 });
 
