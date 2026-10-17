@@ -15,7 +15,8 @@ User pins feedback in the app
   -> durable queue
   -> agent researches the report and comments on the issue
   -> you add "approved"
-  -> failing test first, then the fix, up to 3 attempts, draft PR
+  -> test fails on the live site first, then the fix, up to 3 attempts, draft PR
+  -> the same test passes on the preview of the fix
   -> you merge and deploy
   -> the same test runs against production
   -> the reporter sees "verified"
@@ -55,11 +56,12 @@ User pins feedback in the app
 
 ## 5. Write the failing test first
 
-**Rule:** The agent must add a test tagged `@udd-<issue number>` that fails on the old code and passes on the fix; a run that cannot show both is not counted.
+**Rule:** The agent must add one test tagged `@udd-<issue number>`. The test must fail on the live site first and pass on the preview of the fix; a run that cannot show both is not counted.
 
-**Why:** A coding agent that cannot reproduce the problem produces changes that look right. The bad PRs in the original system had three shapes: only a test changed, the wrong component was edited, or the symptom was hidden while the cause stayed.
 
-**Enforced by:** `templates/scripts/udd/red-first.mjs`, `templates/workflows/udd-fix.yml`
+**Why:** A coding agent that cannot reproduce the problem produces changes that look right. The bad PRs in the original system had three shapes: only a test changed, the wrong component was edited, or the symptom was hidden while the cause stayed. The live site is where the bug still exists, so a test that fails there is a real reproduction. The risk is that the agent writes tests that run against production, so they use a test account with no real data and no admin rights.
+
+**Enforced by:** `templates/scripts/udd/red-first.mjs`, `templates/workflows/udd-fix.yml`, `templates/workflows/udd-preview.yml`
 
 ## 6. Three attempts, then a person
 

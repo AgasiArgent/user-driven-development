@@ -7,8 +7,11 @@ widget -> your database -> delivery -> GitHub issue (label: feedback)
                                          | udd-research.yml comments
                                          | you add "approved"
                                          v
-                          udd-fix.yml: failing test, fix, up to 3 attempts
-                          no-fly check, draft PR (label: fix-ready)
+                          udd-fix.yml: test must fail on production, fix,
+                          up to 3 attempts, no-fly check, draft PR
+                                         | preview deployment of the fix
+                                         v
+                          udd-preview.yml: same test passes (label: fix-ready)
                                          | you merge and deploy
                                          v
                           udd-verify.yml: the same test runs in production
@@ -20,7 +23,8 @@ widget -> your database -> delivery -> GitHub issue (label: feedback)
 | File | Runs when | What it does |
 |---|---|---|
 | `templates/workflows/udd-research.yml` | An issue with `feedback` is opened or labelled | The agent reads the report and the code with read-only tools and writes a comment: likely files, duplicates, open questions. Its output is cleaned before it is posted. |
-| `templates/workflows/udd-fix.yml` | A person adds `approved` to an issue that has `feedback` | Three jobs. **guard** decides and marks the issue `in-progress`. **agent** edits files with a read-only token. It must add a test tagged `@udd-<issue number>`, and the checker confirms the test fails on the old code and passes on the new. It gets three attempts. **publish** applies the patch, checks no-fly zones with a copy of the checker, and opens a draft PR. Agent code never runs next to a write token. |
+| `templates/workflows/udd-fix.yml` | A person adds `approved` to an issue that has `feedback` | Four kinds of job. **guard** decides and marks the issue `in-progress`. **agent-N** holds the model token and edits files; it installs nothing and runs nothing, and it must add one test tagged `@udd-<issue number>`. **red-N** has no model token and no write token: it applies only the test files of the patch to the base commit and runs the test against `UDD_PROD_URL`, where it must fail. Up to three attempts. **publish** runs no project code: it checks the patch hash, decides with copies of the trusted scripts, checks no-fly zones, and opens a draft PR; the label stays `in-progress` until the preview check passes. |
+| `templates/workflows/udd-preview.yml` | A non-production deployment succeeds (Vercel reports these to GitHub by itself), or by hand with `url` and `issue` | Finds the `udd/fix-<n>` pull request that owns the deployed commit, runs its tagged test against the preview address under the test account, and the trusted checker decides. A pass labels the issue `fix-ready`; a failure labels it `needs-human`. `UDD_PREVIEW_BYPASS` is sent as `x-vercel-protection-bypass` if set. No model is involved. |
 | `templates/workflows/udd-verify.yml` | A production deployment succeeds, or by hand | Runs the tagged tests of shipped issues against `UDD_PROD_URL`. A pass labels the issue `verified` and closes it. A failure reopens it, labels it `needs-human` and removes `shipped`. If the fix is not deployed yet, the issue is skipped. |
 | `templates/workflows/udd-routine.yml` | Weekly, or by hand | Runs the routines in [ROUTINES.md](../ROUTINES.md). |
 
@@ -47,9 +51,9 @@ Repository variables:
 | `UDD_TEST_CMD` | `npm test` | Unit tests. |
 | `UDD_E2E_CMD` | `npx playwright test` | Browser tests. |
 | `UDD_TEST_GLOB` | `**/*.spec.ts,**/*.test.ts,e2e/**` | Which paths count as tests. Only changes to these are kept on the base when checking that the test fails first. |
-| `UDD_PROD_URL` | none | Production address for `udd-verify.yml`. Without it the workflow writes a summary and stops. |
+| `UDD_PROD_URL` | none | Production address: the fix test must fail there, and `udd-verify.yml` checks it after the deploy. Without it the workflows stop. |
 
-Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, uses your subscription), `UDD_TEST_USER_EMAIL`, `UDD_TEST_USER_PASSWORD`. `ANTHROPIC_API_KEY` works as an alternative to the token; if you use it, set a monthly spend limit on the key in the Anthropic console.
+Secrets: `UDD_PREVIEW_BYPASS` (optional, Vercel Protection Bypass for Automation), `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, uses your subscription), `UDD_TEST_USER_EMAIL`, `UDD_TEST_USER_PASSWORD`. `ANTHROPIC_API_KEY` works as an alternative to the token; if you use it, set a monthly spend limit on the key in the Anthropic console.
 
 ## Widget
 

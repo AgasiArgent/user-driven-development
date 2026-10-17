@@ -1,6 +1,6 @@
 # Make your users your testers
 
-An open-source kit for one person, or a small team, who builds an app with coding agents and has real users. Your users point at what is broken. An agent turns each report into an issue with research, you approve it, and the agent opens a draft PR with a test that fails on the old code. After you deploy, the same test runs against production and the reporter sees "verified".
+An open-source kit for one person, or a small team, who builds an app with coding agents and has real users. Your users point at what is broken. An agent turns each report into an issue with research, you approve it, and the agent opens a draft PR with a test that fails on the live site. On the preview of the fix the same test passes. After you deploy, it runs against production and the reporter sees "verified".
 
 ## Paste this into your coding agent
 
@@ -15,15 +15,18 @@ flowchart TD
   U[User pins feedback in the app] --> Q[(Saved in your database, optional)]
   Q --> I[GitHub issue labelled feedback]
   I --> R[Agent researches and comments]
-  R -->|you add approved| F[Failing test, then the fix, up to 3 attempts]
+  R -->|you add approved| F[Test must fail on the live site, then the fix, up to 3 attempts]
   F --> P[Draft PR]
-  P -->|you merge and deploy| V{Same test passes in production?}
+  P --> W{Same test passes on the preview?}
+  W -->|no| H[needs-human]
+  W -->|yes, fix-ready| M[You merge and deploy]
+  M -->|checked in production| V{Same test passes in production?}
   V -->|yes| D[Reporter sees verified]
-  V -->|no| H[needs-human]
+  V -->|no| H
 ```
 
 - A **Report a problem** widget for your app. The user clicks the broken element and writes what is wrong.
-- Three GitHub workflows: research on each report, a fix with a failing test first, and a check in production after you deploy.
+- Four GitHub workflows: research on each report, a fix whose test must fail on the live site first and pass on the preview, and a check in production after you deploy.
 - A weekly session: tell your agent "run WEEKLY.md" and it collects what is stuck and asks you the product questions, all at once. See [WEEKLY.md](WEEKLY.md).
 - Three weekly routines that open draft PRs or issues: dead code, duplicates and a security review. See [ROUTINES.md](ROUTINES.md).
 
@@ -45,7 +48,7 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 2. Research comes before the issue, and agent text is cleaned.
 3. A person approves before any code is written.
 4. Some paths are never changed automatically.
-5. The test that reproduces the problem is written first and must fail on the old code.
+5. The test that reproduces the problem is written first. It must fail on the live site first and pass on the preview.
 6. Three attempts, then a person.
 7. Done means the test passes in production.
 8. One run per issue.

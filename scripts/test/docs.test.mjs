@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -141,4 +141,66 @@ test("README states the spec section 10 numbers in its wording", () => {
   assert.match(text, /Limits/);
   assert.match(text, /public issue/i);
   assert.ok(!/[–—]/.test(text), "README has em or en dashes");
+});
+
+// --- Red on production, green on preview (2026-10-17) ---
+
+const SPEC = "docs/superpowers/specs/2026-10-17-vibecoder-kit-design.md";
+
+/** Every vars.X / secrets.X the committed workflows reference. */
+function workflowNames() {
+  const dir = "templates/workflows";
+  const out = new Set();
+  for (const f of readdirSync(join(root, dir)).filter((n) => n.endsWith(".yml"))) {
+    for (const m of read(`${dir}/${f}`).matchAll(/\$\{\{\s*(?:vars|secrets)\.([A-Za-z0-9_]+)/g)) out.add(m[1]);
+  }
+  return [...out].sort();
+}
+
+test("SETUP.md names every variable and secret the workflows reference", () => {
+  const names = workflowNames();
+  assert.ok(names.includes("UDD_PREVIEW_BYPASS") && names.includes("UDD_PROD_URL"), "parser found too little");
+  const text = read("SETUP.md");
+  for (const n of names) assert.ok(text.includes(`\`${n}\``), `SETUP.md does not mention ${n}`);
+});
+
+test("SETUP.md covers the preview check: config, bypass, hosts and the test-account risk", () => {
+  const text = read("SETUP.md");
+  for (const needle of ["storageState", "x-vercel-protection-bypass", "Protection Bypass for Automation", "workflow_dispatch", "udd-preview.yml", "no-fly"]) {
+    assert.ok(text.includes(needle), `SETUP.md lacks ${needle}`);
+  }
+  assert.match(text, /playwright\.config[\s\S]{0,200}(cannot|never) change/i);
+  assert.match(text, /no real data/i);
+  assert.match(text, /no admin/i);
+  assert.match(text, /five `?udd-\*\.yml|five workflow/i);
+  assert.ok(!/four `?udd-/i.test(text), "SETUP.md still says four workflows");
+});
+
+test("CLAUDE.md.snippet: one tagged test, red on production today, green after the fix, test account data only", () => {
+  const text = read("templates/CLAUDE.md.snippet");
+  assert.match(text, /fails on production/i);
+  assert.match(text, /one Playwright test/i);
+  assert.match(text, /test account/i);
+});
+
+test("README, RULES and basic-level describe red-first as fail on the live site, pass on the preview", () => {
+  for (const f of ["README.md", "RULES.md"]) {
+    const text = read(f);
+    assert.match(text, /fail on the live site first and pass on the preview/i, `${f} lacks the plain red-first wording`);
+    assert.ok(!/[–—]/.test(text), `${f} has em or en dashes`);
+  }
+  assert.ok(read("docs/basic-level.md").includes("udd-preview.yml"));
+  assert.match(read("README.md"), /Four GitHub workflows|four GitHub workflows/);
+  assert.match(read("RULES.md"), /preview/i);
+});
+
+test("spec: decision in section 2, preview step in 5.4 and 9", () => {
+  const text = read(SPEC);
+  const sec = (a, b) => text.slice(text.indexOf(a), text.indexOf(b));
+  assert.match(sec("## 2.", "## 3."), /red on production, green on preview/i);
+  assert.ok(sec("## 2.", "## 3.").includes("2026-10-17"));
+  const s54 = sec("### 5.4", "## 6.");
+  for (const needle of ["udd-preview.yml", "UDD_PROD_URL", "red-first.mjs", "sha256", "UDD_PREVIEW_BYPASS"]) assert.ok(s54.includes(needle), `5.4 lacks ${needle}`);
+  assert.match(sec("## 9.", "## 10."), /udd-preview\.yml|preview/i);
+  assert.ok(text.split("\n").length <= 300);
 });
