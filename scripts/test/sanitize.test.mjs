@@ -30,8 +30,8 @@ test("html-escaped image forms are removed", () => {
   assert.equal(sanitizeAgentText('<img src="https://x.io/a.png">'), "[image removed]");
   assert.equal(sanitizeAgentText("![a](https://x.io/a.png)").includes("!["), false);
 });
-test("markdown links become text plus code url", () => {
-  assert.equal(sanitizeAgentText("[click](https://x.io/a)"), "click (`https://x.io/a`)");
+test("markdown links are escaped and the url wrapped", () => {
+  assert.equal(sanitizeAgentText("[click](https://x.io/a)"), "\\[click\\]\\(`https://x.io/a`\\)");
   assert.ok(!sanitizeAgentText("[click](https://x.io/a)").includes("]("));
 });
 test("bare urls are wrapped in backticks", () => {
@@ -80,4 +80,57 @@ test("long hex without a keyword is kept (git sha)", () => {
 });
 test("short value after keyword is kept", () => {
   assert.equal(sanitizeAgentText("token: abc123"), "token: abc123");
+});
+
+test("reference definitions cannot form", () => {
+  const out = sanitizeAgentText("[x]: https://evil.example/p\n[y]: //evil.example");
+  assert.ok(!/(^|\n)\[/.test(out), out);
+  assert.ok(out.includes("\\[x\\]:"));
+  assert.ok(out.includes("`https://evil.example/p`"));
+  assert.ok(out.includes("`//evil.example`"));
+});
+test("scheme-relative //host image/link is defused", () => {
+  const out = sanitizeAgentText("![a](//evil.example/p.png) and [b](//evil.example/x)");
+  assert.ok(!out.includes("!["));
+  assert.ok(!/[^\\]\[/.test(out), out);
+  assert.ok(!out.includes("evil.example/p.png"));
+  assert.equal(sanitizeAgentText("see //evil.example/x ok"), "see `//evil.example/x` ok");
+  assert.equal(sanitizeAgentText("// a comment"), "// a comment");
+  assert.equal(sanitizeAgentText("a/b//c"), "a/b//c");
+});
+test("uppercase schemes are wrapped", () => {
+  assert.equal(sanitizeAgentText("go HTTPS://X.IO/a now"), "go `HTTPS://X.IO/a` now");
+  assert.equal(sanitizeAgentText("Http://x.io"), "`Http://x.io`");
+});
+test("www. forms are wrapped, also inside a link", () => {
+  assert.equal(sanitizeAgentText("see www.evil.example/a ok"), "see `www.evil.example/a` ok");
+  const out = sanitizeAgentText("[click](www.evil.example)");
+  assert.ok(!out.includes("]("));
+  assert.ok(out.includes("`www.evil.example`"));
+});
+test("nested brackets and parens cannot form a link or image", () => {
+  const out = sanitizeAgentText("![a [b]](evil) [a [b]](evil) [a](b(c))");
+  for (const bad of ["![", "](", "[b]"]) assert.ok(!out.replace(/\\./g, "").includes(bad), bad + " in " + out);
+  assert.ok(!/(^|[^\\])\[/.test(out));
+  assert.ok(!/(^|[^\\])\(/.test(out));
+});
+test("pre-escaped brackets do not unescape", () => {
+  const out = sanitizeAgentText("\\[a\\](evil)");
+  assert.equal(out, "\\\\\\[a\\\\\\]\\(evil\\)");
+});
+test("link inside code fence is defused", () => {
+  const out = sanitizeAgentText("```\n[a](https://x.io/a)\n![i](https://x.io/i.png)\n```");
+  assert.ok(!out.includes("]("));
+  assert.ok(!out.includes("!["));
+  assert.ok(out.includes("[image removed]"));
+});
+test("backtick inside a url is stripped", () => {
+  assert.equal(sanitizeAgentText("https://x.io/a`b`c end"), "`https://x.io/abc` end");
+  const out = sanitizeAgentText("https://x.io/a` [z](evil)");
+  assert.ok(out.startsWith("`https://x.io/a`"));
+  assert.ok(!out.includes("]("));
+});
+test("literal [image removed] text cannot become a link", () => {
+  const out = sanitizeAgentText("[image removed](https://x.io)");
+  assert.ok(!out.includes("]("));
 });

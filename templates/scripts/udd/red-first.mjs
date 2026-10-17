@@ -32,23 +32,56 @@ function collect(report, tag) {
   return found;
 }
 
-export function redFirstVerdict(base, head, tag) {
-  const h = collect(head, tag);
-  if (h.size === 0) return { ok: false, reason: "no-tagged-test", tests: [] };
+const RED = new Set(["failed", "timedOut", "interrupted"]);
+const verdict = (ok, reason, tests = []) => ({ ok, reason, tests });
+
+/** Production run: every tagged test must exist and be red (failed/timedOut/interrupted). */
+export function baseVerdict(base, tag) {
   const b = collect(base, tag);
-  const RED = new Set(["failed", "timedOut", "interrupted"]);
-  // Only an explicit failure on base is red; absent / skipped / empty base proves nothing.
-  if ([...h.keys()].some((title) => !RED.has(b.get(title)) && b.get(title) !== "passed")) {
-    return { ok: false, reason: "base-missing", tests: [] };
-  }
-  if ([...h.keys()].some((title) => b.get(title) === "passed")) return { ok: false, reason: "passes-on-base", tests: [] };
-  if ([...h.values()].some((status) => status !== "passed")) return { ok: false, reason: "fails-on-head", tests: [] };
-  return { ok: true, reason: "ok", tests: [...h.keys()] };
+  if (b.size === 0) return verdict(false, "no-tagged-test");
+  const statuses = [...b.values()];
+  if (statuses.includes("passed")) return verdict(false, "passes-on-base");
+  // skipped / unknown proves nothing
+  if (statuses.some((st) => !RED.has(st))) return verdict(false, "base-missing");
+  return verdict(true, "ok", [...b.keys()]);
 }
 
+/** Preview run: every tagged test must exist and be green. */
+export function headVerdict(head, tag) {
+  const h = collect(head, tag);
+  if (h.size === 0) return verdict(false, "no-tagged-test");
+  if ([...h.values()].some((st) => st !== "passed")) return verdict(false, "fails-on-head");
+  return verdict(true, "ok", [...h.keys()]);
+}
+
+/** Both runs of the same tests: red on base, green on head. */
+export function redFirstVerdict(base, head, tag) {
+  const h = collect(head, tag);
+  if (h.size === 0) return verdict(false, "no-tagged-test");
+  const b = collect(base, tag);
+  // Only an explicit failure on base is red; absent / skipped / empty base proves nothing.
+  if ([...h.keys()].some((title) => !RED.has(b.get(title)) && b.get(title) !== "passed")) return verdict(false, "base-missing");
+  if ([...h.keys()].some((title) => b.get(title) === "passed")) return verdict(false, "passes-on-base");
+  const hv = headVerdict(head, tag);
+  return hv.ok ? hv : verdict(false, hv.reason);
+}
+
+const readJson = (file) => {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null; // unreadable report == no evidence
+  }
+};
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const [baseFile, headFile, tag] = process.argv.slice(2);
-  const v = redFirstVerdict(JSON.parse(readFileSync(baseFile, "utf8")), JSON.parse(readFileSync(headFile, "utf8")), tag);
+  const [a, b, c] = process.argv.slice(2);
+  if (a === "regex") {
+    console.log(tagRegex(b ?? ""));
+    process.exit(0);
+  }
+  const v =
+    a === "base" ? baseVerdict(readJson(b), c) : a === "head" ? headVerdict(readJson(b), c) : redFirstVerdict(readJson(a), readJson(b), c);
   console.log(v.reason);
   process.exit(v.ok ? 0 : 1);
 }

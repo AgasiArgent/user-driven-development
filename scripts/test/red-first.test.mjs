@@ -76,3 +76,56 @@ test("CLI exit code", () => {
   const bad = spawnSync("node", ["templates/scripts/udd/red-first.mjs", f("pw-base.json"), f("pw-head.json"), "@udd-14"], { encoding: "utf8" });
   assert.equal(bad.status, 1);
 });
+
+import { baseVerdict, headVerdict } from "../../templates/scripts/udd/red-first.mjs";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+test("baseVerdict: reasons and tests", () => {
+  const b = (st, title = "x @udd-20") => rep([spec(title, st)]);
+  assert.deepEqual(baseVerdict(b("failed"), "@udd-20"), { ok: true, reason: "ok", tests: ["x @udd-20"] });
+  assert.equal(baseVerdict(b("timedOut"), "udd-20").reason, "ok");
+  assert.equal(baseVerdict(b("passed"), "@udd-20").reason, "passes-on-base");
+  assert.equal(baseVerdict(b("skipped"), "@udd-20").reason, "base-missing");
+  assert.equal(baseVerdict(rep([spec("other", "failed")]), "@udd-20").reason, "no-tagged-test");
+  assert.equal(baseVerdict(null, "@udd-20").reason, "no-tagged-test");
+  assert.equal(baseVerdict(b("failed", "x @udd-200"), "@udd-20").reason, "no-tagged-test");
+});
+test("baseVerdict: one passing tagged test among failing ones -> passes-on-base", () => {
+  const r = rep([spec("a @udd-20", "failed"), spec("b @udd-20", "passed")]);
+  assert.equal(baseVerdict(r, "@udd-20").reason, "passes-on-base");
+});
+test("baseVerdict: tagged test absent but tag-like title missing -> base-missing is for combined check only", () => {
+  assert.equal(baseVerdict(rep([]), "@udd-20").reason, "no-tagged-test");
+});
+test("headVerdict: reasons and tests", () => {
+  const h = (st) => rep([spec("x @udd-20", st)]);
+  assert.deepEqual(headVerdict(h("passed"), "@udd-20"), { ok: true, reason: "ok", tests: ["x @udd-20"] });
+  assert.equal(headVerdict(h("failed"), "@udd-20").reason, "fails-on-head");
+  assert.equal(headVerdict(h("skipped"), "@udd-20").reason, "fails-on-head");
+  assert.equal(headVerdict(rep([]), "@udd-20").reason, "no-tagged-test");
+  assert.equal(headVerdict(h("passed"), "@udd-2").reason, "no-tagged-test");
+});
+test("CLI modes: base, head, regex, old form", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rf-"));
+  const bf = join(dir, "b.json");
+  const hf = join(dir, "h.json");
+  writeFileSync(bf, JSON.stringify(rep([spec("x @udd-20", "failed")])));
+  writeFileSync(hf, JSON.stringify(rep([spec("x @udd-20", "passed")])));
+  const run = (...a) => spawnSync("node", ["templates/scripts/udd/red-first.mjs", ...a], { encoding: "utf8" });
+  let r = run("base", bf, "@udd-20");
+  assert.deepEqual([r.status, r.stdout.trim()], [0, "ok"]);
+  r = run("base", hf, "@udd-20");
+  assert.deepEqual([r.status, r.stdout.trim()], [1, "passes-on-base"]);
+  r = run("head", hf, "udd-20");
+  assert.deepEqual([r.status, r.stdout.trim()], [0, "ok"]);
+  r = run("head", bf, "@udd-20");
+  assert.deepEqual([r.status, r.stdout.trim()], [1, "fails-on-head"]);
+  r = run(bf, hf, "@udd-20");
+  assert.deepEqual([r.status, r.stdout.trim()], [0, "ok"]);
+  r = run("regex", "udd-1");
+  assert.deepEqual([r.status, r.stdout.trim()], [0, "@udd-1(?![0-9])"]);
+  r = run("base", join(dir, "missing.json"), "@udd-20");
+  assert.equal(r.status, 1);
+});
