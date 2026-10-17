@@ -1,7 +1,8 @@
 # Second half of the fix loop: checks a fix on its preview deployment before a human merges it.
 # The agent wrote one browser test tagged @udd-<issue> (red on production, checked in udd-fix). Here that same
 # test must pass on the preview built from the fix branch. If it does, the issue gets fix-ready; if not, needs-human.
-# Runs after a successful NON-production deployment, or by hand with the url and issue inputs. No model is involved.
+# Runs after a successful NON-production deployment, or by hand with the issue input (the url input is optional: without
+# it the deployments of the pull request head commit are polled every 30 s for up to 20 minutes). No model is involved.
 #
 # Needs: a test account in the secrets UDD_TEST_USER_EMAIL and UDD_TEST_USER_PASSWORD, and the repository variable
 # UDD_PREVIEW_HOST_SUFFIX (e.g. ".vercel.app"): a preview address is accepted only if it is https and its host ends
@@ -31,8 +32,8 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: Address of the preview deployment to test
-        required: true
+        description: Address of the preview deployment to test. Optional; when empty, the successful non-production deployment of the pull request head commit is awaited (up to 20 minutes)
+        required: false
         type: string
       issue:
         description: Number of the issue whose fix branch (udd/fix-<number>) is deployed there
@@ -53,7 +54,7 @@ jobs:
        github.event.deployment.environment != 'Production' &&
        github.event.deployment.environment != 'production')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: read
@@ -93,6 +94,23 @@ jobs:
             url="$INPUT_URL"; sha=""
             case "$INPUT_ISSUE" in ''|*[!0-9]*) skip "The issue input must be a number." ;; esac
             prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY%%/*}:udd/fix-$INPUT_ISSUE")
+            if [ -z "$url" ]; then
+              # No address given: wait for a successful non-production deployment of the head commit of this repository's
+              # udd/fix-<n> pull request, every 30 s for up to 20 minutes. The host checks below still apply to its address.
+              poll_sha=$(echo "$prs" | jq -r --arg repo "$GITHUB_REPOSITORY" '
+                [.[] | select(.state == "open" and .head.repo.full_name == $repo and (.head.ref | test("^udd/fix-[0-9]+$")))] | .[0].head.sha // empty')
+              [ -n "$poll_sha" ] || skip "No open udd/fix-<number> pull request of this repository matches this issue."
+              for attempt in $(seq 1 40); do
+                for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$poll_sha" \
+                    --jq '.[] | select((.production_environment | not) and ((.environment // "") | ascii_downcase != "production")) | .id' 2>/dev/null || true); do
+                  url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+                    --jq '.[0] | select(.state == "success") | .environment_url // empty' 2>/dev/null || true)
+                  [ -n "$url" ] && break 2
+                done
+                [ "$attempt" -lt 40 ] && sleep 30
+              done
+              [ -n "$url" ] || skip "No successful preview deployment of the pull request head commit appeared within 20 minutes. Nothing was tested."
+            fi
           else
             url="${ENV_URL:-$TARGET_URL}"; sha="$DEPLOY_SHA"
             prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls")
@@ -141,6 +159,7 @@ jobs:
       PLAYWRIGHT_BASE_URL: ${{ needs.find.outputs.url }}
       TAG_RE: ${{ needs.find.outputs.re }}
       E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,7 +168,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci && npx playwright install --with-deps chromium
+      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       - name: Run the fix's test on the preview
         env:

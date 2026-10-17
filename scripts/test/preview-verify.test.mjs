@@ -54,7 +54,7 @@ test("preview: the job that runs project code has no write permission and no wri
   assert.doesNotMatch(test_, /cache:/);
   assert.doesNotMatch(test_, /GH_TOKEN|github\.token|GITHUB_TOKEN/);
   assert.doesNotMatch(test_, /CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
-  assert.match(test_, /npm ci/);
+  assert.match(test_, /bash -c "\$UDD_INSTALL_CMD"/);
   assert.match(test_, /UDD_TEST_USER_EMAIL/);
   assert.match(test_, /UDD_TEST_USER_PASSWORD/);
   assert.match(test_, /PLAYWRIGHT_BASE_URL/);
@@ -215,4 +215,44 @@ test("verify: a missing or unparsable report is an error, only a valid empty rep
   assert.match(apply, /ERROR/);
   // the test job must not paper a broken run over with an empty-but-valid report
   assert.doesNotMatch(jobs(t).test, /echo '\{\}' > "\$report"[\s\S]*suites/);
+});
+
+test("both workflows install through UDD_INSTALL_CMD (default npm ci), run via bash -c from env, never interpolated", () => {
+  for (const [name, t] of [["preview", preview()], ["verify", verify()]]) {
+    const test_ = jobs(t).test;
+    assert.match(test_, /UDD_INSTALL_CMD: \$\{\{ vars\.UDD_INSTALL_CMD \|\| 'npm ci' \}\}/, `${name}: env default`);
+    assert.match(test_, /bash -c "\$UDD_INSTALL_CMD"/, `${name}: run from env`);
+    for (const line of t.split("\n")) {
+      if (/^\s*#/.test(line)) continue;
+      assert.doesNotMatch(line, /npm ci(?!')/, `${name}: hard-coded npm ci: ${line}`);
+    }
+  }
+});
+
+test("preview: url input is optional; without it the deployments of the PR head sha are polled", () => {
+  const t = preview();
+  assert.match(t, /url:\s*\n\s+description:[^\n]*\n\s+required: false/);
+  assert.match(t, /issue:\s*\n\s+description:[^\n]*\n\s+required: true/);
+  const find = jobs(t).find;
+  assert.match(find, /sleep 30/);
+  assert.match(find, /seq 1 40|\(\( *i *< *40|-lt 40|-le 40/);
+  assert.match(find, /production_environment|Production|production/);
+  assert.match(find, /\[ -z "\$url" \]|-z "\$INPUT_URL"|-z "\$url"/);
+  // host suffix and https checks stay in the shared path, after the polled url is chosen
+  const poll = find.search(/sleep 30/);
+  const suffix = find.search(/case "\$host" in \*"\$SUFFIX"\)/);
+  assert.ok(poll > -1 && suffix > poll, "suffix check must follow polling");
+  assert.match(find, /\.head\.repo\.full_name/);
+});
+
+test("verify: a tagged spec present in the report but skipped is an ERROR with needs-human, not 'not deployed yet'", () => {
+  const apply = jobs(verify()).apply;
+  assert.match(apply, /skipped/);
+  const skippedAt = apply.search(/tagged_skipped|skipped_tagged/);
+  const totalAt = apply.search(/if \[ "\$total" = "0" \]/);
+  assert.ok(skippedAt > -1, "no skipped-spec detection");
+  assert.ok(skippedAt < totalAt, "skipped check must come before the total==0 skip");
+  assert.match(apply, /ERROR: [^\n]*skipped/);
+  assert.match(apply, /annotations|\.status == "skipped"|== "skipped"/);
+  assert.match(apply, /Skipped\./);
 });

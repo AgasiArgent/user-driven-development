@@ -87,6 +87,7 @@ jobs:
       ITEMS: ${{ needs.plan.outputs.items }}
       PLAYWRIGHT_BASE_URL: ${{ needs.plan.outputs.url }}
       E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
     steps:
       # Tests are taken from the deployed commit, so a fix whose test is not there yet is still waiting for its deploy.
       - uses: actions/checkout@v4
@@ -96,7 +97,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci && npx playwright install --with-deps chromium
+      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       - name: Run the tests of shipped fixes
         env:
@@ -160,6 +161,23 @@ jobs:
               echo "#$n: ERROR: the Playwright report is missing or unreadable, so the fix could not be checked." >> "$GITHUB_STEP_SUMMARY"
               gh issue edit "$n" --add-label needs-human
               gh issue comment "$n" --body "Verification in production could not run: the Playwright report is missing or unreadable, so a developer needs to look. Run: $run_url"
+              errors=$((errors + 1))
+              continue
+            fi
+            # A tagged spec that is in the report but skipped (test.skip, a skip annotation, status skipped) proves nothing
+            # about the fix and is not "not deployed yet": it is an ERROR.
+            re=$(echo "$ITEMS" | jq -r --argjson n "$n" '.[] | select(.n == $n) | .re')
+            tagged_skipped=$(jq --arg re "$re" --arg tag "@udd-$n" '
+              [.. | objects | select(has("specs")) | .specs[]
+               | select((.title // "" | test($re)) or ((.tags // []) | map(if startswith("@") then . else "@" + . end) | index($tag)))
+               | select(any(.tests[]?; .status == "skipped"
+                                       or any(.annotations[]?; .type == "skip" or .type == "fixme")
+                                       or ((.results // []) | length == 0)
+                                       or ((.results | last).status == "skipped")))] | length' "$report" 2>/dev/null || echo 0)
+            if [ "$tagged_skipped" != "0" ]; then
+              echo "#$n: ERROR: the test tagged @udd-$n is in the report but was skipped, so the fix could not be checked." >> "$GITHUB_STEP_SUMMARY"
+              gh issue edit "$n" --add-label needs-human
+              gh issue comment "$n" --body "Verification in production could not run: the test tagged for this fix was skipped (test.skip, a skip annotation or a skipped status), so a developer needs to look. Run: $run_url"
               errors=$((errors + 1))
               continue
             fi
