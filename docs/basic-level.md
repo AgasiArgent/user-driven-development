@@ -1,62 +1,86 @@
-# Basic level: GitHub Issues + Actions
+# Templates reference
 
-The smallest version of the loop that runs from a fork. It covers principles 1, 3, 4, 8, 9 and 11 of [the concept](concept.md); the red-first scenario, rework rounds and production verification are in the full level.
+What each file in `templates/` does, and the settings it reads. Your agent installs these by following [SETUP.md](../SETUP.md); read this page when you want to know what it put in your repository, or to change something by hand.
 
 ```text
-widget → feedback_outbox → delivery → GitHub Issue (label: feedback)
-                                         │ a human adds the label "approved"
-                                         ▼
-                         GitHub Actions: udd-fix.yml
-                           coding agent edits files (Claude Code)
-                           no-fly check · unit tests · draft PR
-                                         │ a human reviews, merges, deploys
-                                         ▼
-                         issue closed → reporter sees "done" in the app
+widget -> your database -> delivery -> GitHub issue (label: feedback)
+                                         | udd-research.yml comments
+                                         | you add "approved"
+                                         v
+                          udd-fix.yml: failing test, fix, up to 3 attempts
+                          no-fly check, draft PR (label: fix-ready)
+                                         | you merge and deploy
+                                         v
+                          udd-verify.yml: the same test runs in production
+                          issue closed, label: verified
 ```
 
-## What each piece does
+## Workflows
 
-| Piece | Where | What it does |
+| File | Runs when | What it does |
 |---|---|---|
-| Delivery | `delivery/` | Moves reports with status `received` from `feedback_outbox` into GitHub Issues, with retries; mirrors issue state back (`approved`, `in_progress`, `done`, `rejected`) so the reporter sees it under **My feedback**. |
-| Issue text | `delivery/src/issueBody.ts` | Report text is untrusted: HTML is escaped and every `@` gets a zero-width space, so feedback can neither ping people nor wake up bots. |
-| Agent workflow | `.github/workflows/udd-fix.yml` | Runs only when a person (not a bot) adds `approved` to an issue labelled `feedback`, once per issue. Three jobs: **guard** decides; **agent** edits files with a read-only token and no shell, then the tests run without secrets; **publish** applies the saved patch, checks no-fly zones with a copy of the checker taken from `main`, and opens a **draft** PR. Code written by the agent never runs next to a write token. |
-| No-fly zones | `.udd/no-fly.txt`, `scripts/no-fly-check.mjs` | Paths the agent may not change. If it does, no PR is opened and the issue gets a comment. |
+| `templates/workflows/udd-research.yml` | An issue with `feedback` is opened or labelled | The agent reads the report and the code with read-only tools and writes a comment: likely files, duplicates, open questions. Its output is cleaned before it is posted. |
+| `templates/workflows/udd-fix.yml` | A person adds `approved` to an issue that has `feedback` | Three jobs. **guard** decides and marks the issue `in-progress`. **agent** edits files with a read-only token. It must add a test tagged `@udd-<issue number>`, and the checker confirms the test fails on the old code and passes on the new. It gets three attempts. **publish** applies the patch, checks no-fly zones with a copy of the checker, and opens a draft PR. Agent code never runs next to a write token. |
+| `templates/workflows/udd-verify.yml` | A production deployment succeeds, or by hand | Runs the tagged tests of shipped issues against `UDD_PROD_URL`. A pass labels the issue `verified` and closes it. A failure reopens it, labels it `needs-human` and removes `shipped`. If the fix is not deployed yet, the issue is skipped. |
+| `templates/workflows/udd-routine.yml` | Weekly, or by hand | Runs the routines in [ROUTINES.md](../ROUTINES.md). |
 
-## Turn it on in your fork
+## Scripts
 
-It is off by default, so a fork never spends money by accident.
+| File | What it decides |
+|---|---|
+| `templates/scripts/udd/red-first.mjs` | Whether a Playwright report shows the tagged test failing on the base and passing on the fix. A retry that passes counts as a pass. |
+| `templates/scripts/udd/verify-plan.mjs` | Which issues to verify after a deploy, and what to do with the result. |
+| `templates/scripts/udd/routine-guard.mjs` | Whether a routine may run (one open item at most) and which findings are new. |
+| `templates/scripts/udd/sanitize.mjs` | Cleans agent and reporter text: HTML is escaped and each `@` gets a zero-width space, so text can neither ping people nor wake a bot. The issue body is cut at 65,000 characters. |
+| `templates/scripts/udd/status.mjs` | Maps issue labels to the status the reporter sees. |
+| `scripts/no-fly-check.mjs` | Fails if a patch touches a path listed in `.udd/no-fly.txt` or matches `.udd/no-fly-keywords.txt`. Rename detection is off, so moving a protected file is caught. |
 
-1. **Labels.** Create them once:
-   ```bash
-   gh label create feedback --color 1d76db
-   gh label create approved --color 0e8a16
-   gh label create agent-pr --color 5319e7
-   ```
-2. **Model key.** Add one repository secret: `ANTHROPIC_API_KEY` (pay per use) or `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, uses a Claude subscription).
-3. **Switch.** Add the repository variable `UDD_AGENT_ENABLED` = `true`.
-4. **Delivery.** Run it next to your app with a token that can write issues (a fine-grained token with *Issues: read and write* on this repository):
-   ```bash
-   export DATABASE_URL=postgres://udd:udd@localhost:55432/udd
-   export GITHUB_REPOSITORY=you/your-fork
-   export GITHUB_TOKEN=...            # issues: read and write
-   export PUBLIC_BASE_URL=https://your-app.example   # optional: links screenshots from the issue
-   npm run deliver -w delivery -- --dry-run          # prints the issues it would create
-   npm run deliver -w delivery -- --watch 60         # delivers and syncs every minute
-   ```
+## Settings
 
-Then send feedback in the demo, add `approved` to the issue that appears, and watch the **Actions** tab.
+Labels (exact names): `feedback`, `researched`, `approved`, `in-progress`, `fix-ready`, `shipped`, `verified`, `needs-human`, `routine`, `routine:dead-code`, `routine:duplicates`, `routine:security`, `security`.
 
-## What it costs
+Repository variables:
 
-Each approved issue is one agent run, capped at 30 turns. With an API key you pay per token; with a subscription token it counts against your plan's limits. Nothing runs before a human adds `approved`.
+| Name | Default | Meaning |
+|---|---|---|
+| `UDD_AGENT_ENABLED` | off | `true` turns the agent workflows on. |
+| `UDD_TEST_CMD` | `npm test` | Unit tests. |
+| `UDD_E2E_CMD` | `npx playwright test` | Browser tests. |
+| `UDD_TEST_GLOB` | `**/*.spec.ts,**/*.test.ts,e2e/**` | Which paths count as tests. Only changes to these are kept on the base when checking that the test fails first. |
+| `UDD_PROD_URL` | none | Production address for `udd-verify.yml`. Without it the workflow writes a summary and stops. |
 
-## Limits you should know
+Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`, uses your subscription), `UDD_TEST_USER_EMAIL`, `UDD_TEST_USER_PASSWORD`. `ANTHROPIC_API_KEY` works as an alternative to the token; if you use it, set a monthly spend limit on the key in the Anthropic console.
 
-- **PRs opened with the workflow's `GITHUB_TOKEN` do not start other workflows**, so CI does not run on them automatically. Push an empty commit, or use a GitHub App token for the PR step if you need checks to run.
-- **The agent cannot reproduce the problem in a browser** and nothing checks the fix in production. That is what the full level adds.
-- **The approval is the main defence** against a report that tries to steer the agent. Read the issue before you add `approved`. See the [threat model](threat-model.md).
-- The no-fly check runs on the patch that will be committed, with rename detection off, so moving a protected file is caught. It does not stop the agent from reading those files.
-- **Screenshots in public issues are public.** With `PUBLIC_BASE_URL` set, every issue links to `/api/feedback/FB-<n>/screenshot`, which has no authentication and sequential ids. In a public fork, leave `PUBLIC_BASE_URL` unset or put that route behind your app's login.
-- The agent has no shell, so it cannot run tests itself; the workflow runs them after it, and the result goes into the PR description.
-- With `ANTHROPIC_API_KEY`, set a monthly spend limit on the key in the Anthropic console.
+## Widget
+
+```html
+<script src="/widget.js" data-endpoint="/api/feedback" data-user="alice" defer></script>
+```
+
+- `widget.js` is one file with no framework, about 290 KB, most of it the screenshot library. Build it with `npm ci && npm run build:widget`; it lands in `widget/dist/widget.js`.
+- `data-endpoint` is where reports are sent. Your backend accepts the body described in [`contracts/feedback-report.schema.json`](../contracts/feedback-report.schema.json) and answers `201 {"id": "...", "status": "received"}`. The demo's implementation is [`demo/lib/feedback.ts`](../demo/lib/feedback.ts).
+- `data-user` is optional and is passed through as is.
+- Each report carries the comment, the pinned element (CSS selector, tag, text, position), a screenshot, and the page context: URL, window size, browser, the last 20 console errors and the last 20 failed requests (method, URL without query string, status, no bodies).
+- Add `data-feedback-mask` to anything that shows personal data: it is painted black on the screenshot. Password fields are always masked.
+
+## Delivery
+
+`delivery/` moves reports with status `received` from the `feedback_outbox` table into GitHub Issues, with retries, and mirrors issue state back so the reporter sees it under **My feedback**.
+
+```bash
+export DATABASE_URL=postgres://udd:udd@localhost:55432/udd
+export GITHUB_REPOSITORY=you/your-repo
+export GITHUB_TOKEN=...            # issues: read and write
+export PUBLIC_BASE_URL=https://your-app.example   # optional: links screenshots from the issue
+npm run deliver -w delivery -- --dry-run          # prints the issues it would create
+npm run deliver -w delivery -- --watch 60         # delivers and syncs every minute
+```
+
+## Limits to know
+
+- **PRs opened with the workflow's `GITHUB_TOKEN` do not start other workflows**, so CI does not run on them automatically. Push an empty commit, or use a GitHub App token for the PR step.
+- **Your approval is the main defence** against a report that tries to steer the agent. Read the issue before you add `approved`. See the [threat model](threat-model.md).
+- The no-fly check does not stop the agent from reading protected files, only from changing them.
+- **Screenshots in public issues are public.** With `PUBLIC_BASE_URL` set, every issue links to `/api/feedback/FB-<n>/screenshot`, which has no authentication and uses sequential ids. In a public repository, leave `PUBLIC_BASE_URL` unset or put that route behind your app's login.
+- The agent has no shell, so it cannot run tests itself; the workflow runs them after it.
+- Vercel's GitHub environment name for production is not documented, and Netlify's `deployment_status` behaviour is unverified. `udd-verify.yml` can always be started by hand as a fallback.
