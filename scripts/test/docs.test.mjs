@@ -204,3 +204,45 @@ test("spec: decision in section 2, preview step in 5.4 and 9", () => {
   assert.match(sec("## 9.", "## 10."), /udd-preview\.yml|preview/i);
   assert.ok(text.split("\n").length <= 300);
 });
+
+// --- Final job layout, patch check, honest limits (2026-10-17) ---
+
+test("SETUP.md: preview host suffix variable and the Playwright config sketch (at most 25 lines)", () => {
+  const text = read("SETUP.md");
+  assert.ok(text.includes("`UDD_PREVIEW_HOST_SUFFIX`"));
+  assert.match(text, /start with a dot/i);
+  for (const needle of ["UDD_PREVIEW_HOST", "globalSetup", "PLAYWRIGHT_BASE_URL"]) assert.ok(text.includes(needle), `SETUP.md lacks ${needle}`);
+  const sketch = text.match(/```ts\n([\s\S]*?)```/);
+  assert.ok(sketch, "SETUP.md has no TypeScript sketch");
+  assert.ok(sketch[1].trimEnd().split("\n").length <= 25, "sketch is longer than 25 lines");
+  assert.ok(sketch[1].includes("x-vercel-protection-bypass") && sketch[1].includes("UDD_PREVIEW_HOST"));
+  assert.ok(!/extraHTTPHeaders\s*:\s*\{[^}]*bypass/i.test(sketch[1]), "sketch must not send the bypass header on every request");
+});
+
+test("patch check (exactly one @udd-<n> test plus an app code change) is described in the snippet, SETUP, RULES and basic-level", () => {
+  assert.match(read("templates/CLAUDE.md.snippet"), /exactly one/i);
+  assert.match(read("templates/CLAUDE.md.snippet"), /app code/i);
+  for (const f of ["SETUP.md", "RULES.md", "docs/basic-level.md"]) assert.match(read(f), /patch check/i, `${f} lacks the patch check`);
+});
+
+test("README Limits and RULES 5 say the red run is a signal, not proof", () => {
+  const limits = read("README.md").slice(read("README.md").indexOf("## Limits"), read("README.md").indexOf("## Try it first"));
+  assert.match(limits, /signal, not proof/i);
+  assert.match(limits, /written by the agent/i);
+  assert.match(limits, /draft PR/i);
+  assert.match(limits, /GITHUB_TOKEN/);
+  const r5 = read("RULES.md").slice(read("RULES.md").indexOf("## 5."), read("RULES.md").indexOf("## 6."));
+  assert.match(r5, /signal, not proof/i);
+  assert.match(r5, /patch check/i);
+  assert.match(r5, /your review/i);
+});
+
+test("spec 5.3 and 5.4 follow the final job layout", () => {
+  const text = read(SPEC);
+  const s53 = text.slice(text.indexOf("### 5.3"), text.indexOf("### 5.4"));
+  const s54 = text.slice(text.indexOf("### 5.4"), text.indexOf("## 6."));
+  assert.match(s53, /fix-ready.*снима/s);
+  for (const needle of ["patch-check.mjs", "UDD_PREVIEW_HOST_SUFFIX", "UDD_PREVIEW_HOST", "find", "verdict", "x-vercel-protection-bypass"]) assert.ok(s54.includes(needle), `5.4 lacks ${needle}`);
+  assert.ok(!s54.includes(".git/hooks"), "5.4 still describes the old .git/config handling");
+  assert.ok(s54.includes("dotgit.tar") || s54.includes("tar"), "5.4 lacks the .git restore");
+});

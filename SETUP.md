@@ -124,7 +124,7 @@ A signed-in user sees their reports and the status of each.
 4. Copy `scripts/no-fly-check.mjs` from the kit root to **both** `scripts/no-fly-check.mjs` and
    `.udd/scripts/no-fly-check.mjs` (`udd-fix.yml` reads the first, `udd-routine.yml` the second).
 5. Create `.udd/no-fly.txt` from the kit's template `templates/no-fly.txt` (one glob per line, the
-   paths an agent may not change alone). Read it, then add the app's own sensitive paths that it lacks.
+   paths an agent may not change alone). Add `e2e/fixtures.ts` (section 7). Read it, then add the app's own sensitive paths that it lacks.
    Copy `.udd/no-fly-keywords.txt` and `.udd/research-ignore.txt` from the kit if they exist.
 6. Optional: copy `templates/routines/*.md` to `.udd/routines/` and follow `ROUTINES.md` to turn the routines on.
    - Check: `node --check .udd/scripts/*.mjs` is silent; `ls .github/workflows` shows `udd-research.yml udd-fix.yml udd-preview.yml udd-verify.yml udd-routine.yml`; `actionlint .github/workflows/udd-*.yml` passes if `actionlint` is installed.
@@ -142,15 +142,44 @@ pass on the preview deployment of the fix.
 
 1. If the app has no Playwright, add it as a dev dependency (the one allowed new dependency):
    `npm i -D @playwright/test`, then `npx playwright install chromium`. Add `e2e/`.
-2. Create `playwright.config.ts` once, now. It must:
+2. Create `playwright.config.ts`, a global setup and a fixtures file once, now. Together they must:
    - read the address from `PLAYWRIGHT_BASE_URL` (fall back to the local dev server);
-   - log in the test account in a global setup and save the session with `storageState`; the
+   - log in the test account in the global setup and save the session with `storageState`; the
      credentials come from `UDD_TEST_USER_EMAIL` and `UDD_TEST_USER_PASSWORD`;
-   - when `UDD_PREVIEW_BYPASS` is set, send it as the header `x-vercel-protection-bypass`
-     (`use.extraHTTPHeaders`);
+   - add the header `x-vercel-protection-bypass` (value `UDD_PREVIEW_BYPASS`) only to requests whose
+     host equals `UDD_PREVIEW_HOST`, and send nothing when the secret is empty. Never put it in
+     `use.extraHTTPHeaders`: that would send the secret to every host the page calls. The workflow sets
+     `UDD_PREVIEW_HOST` to the host of the preview address it tests;
    - need no database for the check against production.
-   `playwright.config.*` and the global setup are no-fly paths (`templates/no-fly.txt`): the agent
-   cannot change them later, so get them right now. Tell the owner that only a person edits them from here on.
+
+   Sketch (adapt the login to the app):
+
+```ts
+// playwright.config.ts
+import { defineConfig } from "@playwright/test";
+export default defineConfig({
+  globalSetup: "./e2e/global-setup.ts", // signs in with UDD_TEST_USER_*, saves e2e/.auth/state.json
+  use: {
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
+    storageState: "e2e/.auth/state.json",
+  },
+});
+// e2e/fixtures.ts: every test imports { test, expect } from here
+import { test as base } from "@playwright/test";
+const { UDD_PREVIEW_HOST: host, UDD_PREVIEW_BYPASS: secret } = process.env;
+export const test = base.extend({
+  context: async ({ context }, use) => {
+    if (host && secret) await context.route((u) => u.host === host, (r) =>
+      r.continue({ headers: { ...r.request().headers(), "x-vercel-protection-bypass": secret } }));
+    await use(context);
+  },
+});
+export { expect } from "@playwright/test";
+```
+
+   `playwright.config.*` and the global setup are no-fly paths (`templates/no-fly.txt`). Add the line
+   `e2e/fixtures.ts` to `.udd/no-fly.txt` too (section 6). The agent cannot change these files later,
+   so get them right now. Tell the owner that only a person edits them from here on.
 3. `UDD_E2E_CMD` (default `npx playwright test`) must accept extra arguments, because the
    workflows append `--grep` and `--reporter=json`. A wrapper script that ignores arguments breaks them.
 4. Add one smoke test `e2e/udd-smoke.spec.ts` that loads the home page. It has no `@udd-` tag, so it is never run as a fix check.
@@ -166,6 +195,7 @@ Repository variables you set yourself (`gh variable set NAME --body VALUE`):
 - `UDD_E2E_CMD`: default `npx playwright test`.
 - `UDD_TEST_GLOB`: which files count as tests (default `**/*.spec.ts,**/*.test.ts,e2e/**`).
 - `UDD_PROD_URL`: the production address, only if question 4 was yes. The fix workflow runs the new test against it and must see it fail; `udd-verify.yml` runs it there again after the deploy.
+- `UDD_PREVIEW_HOST_SUFFIX`: which preview addresses `udd-preview.yml` may test. It must start with a dot; an address is accepted only if it is https and its host ends with this suffix. Vercel: `.vercel.app` (or the project's custom preview domain, with a leading dot). Other hosts: the suffix of their preview addresses, for example `.netlify.app`. Without it the preview check tests nothing and says so in the run summary.
 
 Secrets the **owner** enters. Tell the owner the name, where to get it, and the command. You never see or print the value:
 - `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` in their terminal (Claude Pro or Max), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`. An API key in `ANTHROPIC_API_KEY` works instead; then set a monthly spend limit on it.
@@ -182,6 +212,11 @@ its preview address.
   `udd-preview.yml` by hand (`workflow_dispatch`) with the preview URL and the issue number:
   `gh workflow run udd-preview.yml -f url=<preview address> -f issue=<n>`.
 - Production deployments start `udd-verify.yml` the same way, by hand: `gh workflow run udd-verify.yml -f url=<address>`.
+
+Before a fix becomes a draft PR, a patch check (`templates/scripts/udd/patch-check.mjs`) requires exactly
+one test tagged `@udd-<n>` and a change to app code, not only to tests. The red run on production is a signal,
+not proof: the test is written by the agent. The guarantees are the patch check, the green run on the preview,
+the draft PR and the owner's review.
 
 Tell the owner the risk plainly: the tests are written by the agent and run against production and
 preview under the test account. That account must hold no real data and no admin rights, and the
@@ -205,7 +240,7 @@ Run each check. All six must pass.
 2. Widget to issue: a real report from the browser creates an issue with the label `feedback` (section 4).
 3. Escaping: a report containing `<img src=x onerror=1>` and `@someone` shows as text with no mention (read the issue body).
 4. "My feedback" shows the report and moves to "Looked into" when `researched` is added (section 5).
-5. Files: `.github/workflows/udd-*.yml`, `.udd/scripts/*.mjs` (six files including `no-fly-check.mjs`), `.udd/no-fly.txt` exist, and `UDD_TEST_CMD` passes locally.
+5. Files: `.github/workflows/udd-*.yml`, `.udd/scripts/*.mjs` (seven files including `no-fly-check.mjs` and `patch-check.mjs`), `.udd/no-fly.txt` exist, and `UDD_TEST_CMD` passes locally.
 6. No secret value is in `git diff` (`git diff --stat` and a search of the diff for `ghp_`, `sk-`, `github_pat_` finds nothing).
 
 - Check: all six items above pass.
@@ -216,7 +251,7 @@ with `gh variable set UDD_AGENT_ENABLED --body true`, and tell the owner to open
 for the branch and merge it. Workflows only run from the default branch.
 
 Tell the owner two limits plainly:
-- Pull requests opened by the workflows use `GITHUB_TOKEN`, so the app's own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token.
+- Pull requests opened by the workflows use `GITHUB_TOKEN`, so the app's own CI does not run on them automatically (the preview check is a separate workflow and is not affected). Run CI by hand before merging, or configure a GitHub App token.
 - In a public repository every user report becomes a public issue. Users must not report secrets or personal data. The agent's research comment is sanitized but still public. Security checks run only locally there (`ROUTINES.md` section 4).
 
 Finish with a short report: what was installed, what the owner still has to do (secrets, merge,

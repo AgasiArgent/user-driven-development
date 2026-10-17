@@ -67,7 +67,9 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 
 ## Limits
 
-- Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token.
+- The red run on production is a signal, not proof. The test is written by the agent, so a test that fails on the live site can still miss the real problem. What you can rely on: a patch check (each fix has exactly one test tagged `@udd-<n>` and a change to app code), the same test passing on the preview of the fix, a draft PR, and your own review before you merge.
+- Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token. The preview check is a separate workflow and still runs.
+- The tests run against production and the preview under a test account. Give it no real data and no admin rights.
 - In a public repository every user report becomes a public issue. Users should not report secrets or personal data. The agent's research comment is cleaned, but it is public too. Security checks run only on your machine there.
 - The database step is optional. Without one, a report can be lost if GitHub is down.
 

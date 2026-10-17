@@ -56,12 +56,11 @@ User pins feedback in the app
 
 ## 5. Write the failing test first
 
-**Rule:** The agent must add one test tagged `@udd-<issue number>`. The test must fail on the live site first and pass on the preview of the fix; a run that cannot show both is not counted.
+**Rule:** The agent must add one test tagged `@udd-<issue number>` and a change to app code. The test must fail on the live site first and pass on the preview of the fix; a run that cannot show both is not counted.
 
+**Why:** A coding agent that cannot reproduce the problem produces changes that look right. The bad PRs in the original system had three shapes: only a test changed, the wrong component was edited, or the symptom was hidden while the cause stayed. The live site is where the bug still exists, so a test that fails there is a real reproduction. The risk is that the agent writes tests that run against production, so they use a test account with no real data and no admin rights. Be honest about the limit: the red run is a signal, not proof, because the agent also writes the test and can write one that fails for the wrong reason. The guarantees are the patch check (exactly one tagged test, and app code changed), the green run on the preview, the draft PR and your review. Pull requests opened with `GITHUB_TOKEN` do not start your app's CI, so run it yourself before merging.
 
-**Why:** A coding agent that cannot reproduce the problem produces changes that look right. The bad PRs in the original system had three shapes: only a test changed, the wrong component was edited, or the symptom was hidden while the cause stayed. The live site is where the bug still exists, so a test that fails there is a real reproduction. The risk is that the agent writes tests that run against production, so they use a test account with no real data and no admin rights.
-
-**Enforced by:** `templates/scripts/udd/red-first.mjs`, `templates/workflows/udd-fix.yml`, `templates/workflows/udd-preview.yml`
+**Enforced by:** `templates/scripts/udd/red-first.mjs`, `templates/scripts/udd/patch-check.mjs`, `templates/workflows/udd-fix.yml`, `templates/workflows/udd-preview.yml`
 
 ## 6. Three attempts, then a person
 

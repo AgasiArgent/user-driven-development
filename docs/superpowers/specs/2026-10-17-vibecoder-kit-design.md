@@ -109,12 +109,19 @@
 | `feedback` | маршрут приёма | Received |
 | `researched` | `udd-research.yml` | Looked into |
 | `approved` | человек | Approved |
-| `in-progress` | `udd-fix.yml` (остаётся и после открытия PR, пока не проверено превью) | In progress |
-| `fix-ready` | `udd-preview.yml`, когда тест прошёл на превью | Fix ready |
-| `shipped` | `udd-fix.yml` (задача shipped) при слиянии PR | Shipped |
-| `verified` | `udd-verify.yml` | Verified in production |
-| `needs-human` | `udd-fix.yml`, `udd-preview.yml`, `udd-verify.yml` | Waiting for the developer |
+| `in-progress` | `udd-fix.yml`, задача `guard` (остаётся и после открытия PR, пока не проверено превью) | In progress |
+| `fix-ready` | `udd-preview.yml`, задача `verdict`, когда тест прошёл на превью | Fix ready |
+| `shipped` | `udd-fix.yml`, задача `shipped`, при слиянии PR | Shipped |
+| `verified` | `udd-verify.yml`, задача `apply` | Verified in production |
+| `needs-human` | `udd-fix.yml` (`publish`), `udd-preview.yml` (`verdict`), `udd-verify.yml` (`apply`) | Waiting for the developer |
 | закрыт как not planned | человек | Declined |
+
+Переходы (каждый называет весь набор меток, поэтому `guard` сначала создаёт недостающие):
+- `guard`: добавляет `in-progress`; снимает `needs-human`, `fix-ready`, `verified`.
+- `publish`, черновой PR открыт: остаётся `in-progress`; `needs-human`, `fix-ready`, `verified` сняты. Нет красной попытки, запретный путь или сбой после выбора: добавляет `needs-human`; снимает `in-progress` и `fix-ready`.
+- `udd-preview.yml` `verdict`: тест прошёл: добавляет `fix-ready`, снимает `in-progress` и `needs-human`. Нет: добавляет `needs-human`, снимает `fix-ready` и `in-progress`.
+- `shipped` (слияние PR `udd/fix-<n>`): добавляет `shipped`; снимает `fix-ready`, `in-progress`, `needs-human`.
+- `udd-verify.yml` `apply`: прошёл: `verified` (и закрытие issue); упал: `needs-human`, `shipped` снимается, закрытый issue открывается снова. Нечитаемый отчёт: только `needs-human`.
 
 ### 5.4. Workflow
 
@@ -127,18 +134,19 @@
 - Ставит `researched`.
 
 **`udd-fix.yml`** — человек (не бот) поставил `approved` на issue с `feedback`. Идея «red on production, green on preview»: тест красный на живом сайте и зелёный на превью. Задачи (имена как в файле):
-- `guard` (`issues: write`): тот же отбор, что и раньше (`sender.type == 'User'`, метка `feedback`, `vars.UDD_AGENT_ENABLED == 'true'`, один запуск на issue); ставит `in-progress`.
-- `agent-1`, `agent-2`, `agent-3`: держат токен модели (`CLAUDE_CODE_OAUTH_TOKEN` или `ANTHROPIC_API_KEY`), права `contents: read`, без установки, без тестов, без запуска кода проекта. Агент пишет ОДИН Playwright-тест с пометкой `@udd-<номер issue>` и исправление. Перед агентом сохраняется `.git/config`, перед `git add` он восстанавливается, а `.git/hooks` удаляется. Патч уходит артефактом, его sha256 — выход задачи. Попытки 2 и 3 идут только если предыдущая проверка red упала, на свежем раннере, и получают прошлую причину в промпте.
+- `guard` (`issues: write`): отбор (`sender.type == 'User'`, метка `feedback`, `vars.UDD_AGENT_ENABLED == 'true'`, один запуск на issue, есть ключ модели и `vars.UDD_PROD_URL`); создаёт недостающие метки и ставит `in-progress`.
+- `agent-1`, `agent-2`, `agent-3`: держат токен модели (`CLAUDE_CODE_OAUTH_TOKEN` или `ANTHROPIC_API_KEY`), права `contents: read`, без установки, без тестов, без запуска кода проекта. Агент пишет ОДИН Playwright-тест с пометкой `@udd-<номер issue>` и исправление кода приложения. Перед агентом весь `.git` упаковывается в tar (`dotgit.tar`) и после агента восстанавливается из него, затем `git` без системного и глобального конфига, хуков, fsmonitor и внешних драйверов diff режет патч. Патч уходит артефактом, его sha256 — выход задачи. Патч с секретом модели в тексте не загружается. Попытки 2 и 3 идут только если предыдущий вердикт отрицательный, на свежем раннере, и получают его причину в промпте.
 - `red-1`, `red-2`, `red-3`: без токена модели и без токена на запись (`contents: read`, `persist-credentials: false`, без кэша). Берут базовый коммит, проверяют sha256 патча, применяют ТОЛЬКО файлы патча, подходящие под `vars.UDD_TEST_GLOB` (конфиг Playwright, tsconfig и global setup закрыты списком запретных путей), ставят зависимости и запускают `${UDD_E2E_CMD} --grep` с границей тега против `vars.UDD_PROD_URL` под `UDD_TEST_USER_EMAIL` и `UDD_TEST_USER_PASSWORD`. Результат — `base.json`. Вердикт здесь не считается.
-- `verdict-1`, `verdict-2`, `verdict-3`: читают `base.json` доверенным `red-first.mjs` только чтобы решить, нужна ли следующая попытка.
-- `publish` (`contents: write`, `pull-requests: write`, `issues: write`; код проекта не запускает): до применения патча копирует `red-first.mjs`, `no-fly-check.mjs` и `no-fly.txt` с базового коммита в `$RUNNER_TEMP/trusted`. Проверяет sha256, считает `baseVerdict` по каждому `base.json`, берёт первую попытку с красным тестом, применяет её патч, проверяет запретные пути (`git diff --cached --name-only -z --no-renames`, затем `no-fly-check.mjs -z`), пушит ветку `udd/fix-<n>` и открывает ЧЕРНОВОЙ PR «Fixes #<n>». Метка остаётся `in-progress`: превью ещё не проверено. Если красных попыток нет — комментарий с тремя причинами, `needs-human`, `in-progress` снимается.
-- `shipped`: при слиянии PR из ветки `udd/fix-<n>` этого репозитория ставит `shipped`, снимает `fix-ready` и `in-progress`.
+- `verdict-1`, `verdict-2`, `verdict-3`: без токенов, скрипты базового коммита. Читают `base.json` через `red-first.mjs base` и запускают `patch-check.mjs` на патче (ровно один добавленный тест с тегом `@udd-<n>` и изменение кода приложения, не только тестов); причина (`no-changes`, `red-run-failed`, `no-tagged-test`, `multiple-tagged-tests`, `no-app-change`, `passes-on-base` и др.) идёт в следующую попытку.
+- `publish` (`contents: write`, `pull-requests: write`, `issues: write`; код проекта не запускает): до применения патча копирует `red-first.mjs`, `no-fly-check.mjs`, `patch-check.mjs` и `no-fly.txt` с базового коммита в `$RUNNER_TEMP/trusted`. По каждой попытке заново проверяет sha256, считает red-вердикт и патч-проверку, берёт первую попытку, прошедшую оба, применяет её патч, проверяет запретные пути (`git diff --cached --name-only -z --no-renames`, затем `no-fly-check.mjs -z`), пушит ветку `udd/fix-<n>` и открывает ЧЕРНОВОЙ PR «Fixes #<n>». Метка остаётся `in-progress`: превью ещё не проверено. Если подходящей попытки нет — комментарий с причинами всех попыток, `needs-human`, `in-progress` снимается.
+- `shipped`: при слиянии PR из ветки `udd/fix-<n>` этого репозитория ставит `shipped`, снимает `fix-ready`, `in-progress`, `needs-human`.
 - Граница тега везде одна — `tagRegex(tag)` из `red-first.mjs` (`@udd-1(?![0-9])`).
+- Честный предел: красный прогон на продакшене — сигнал, а не доказательство, потому что тест пишет сам агент. Гарантии дают патч-проверка, зелёный прогон на превью, черновой PR и ревью владельца. PR, открытые через `GITHUB_TOKEN`, не запускают CI приложения.
 
-**`udd-preview.yml`** — событие `deployment_status` (успех, окружение не production) или ручной запуск (`workflow_dispatch`, поля `url` и `issue`). Модель не участвует.
-- `find` находит PR по sha деплоя (`commits/<sha>/pulls`); подходят только ветки `^udd/fix-[0-9]+$` этого же репозитория.
-- `test` — единственная задача с кодом проекта: чекаут головы PR, установка, запуск помеченного теста против `environment_url` деплоя (запасной вариант — `target_url`) под тестовым аккаунтом. Секрет `UDD_PREVIEW_BYPASS` (необязательный, защита развёртываний Vercel) приходит в тест переменной окружения; конфиг Playwright отправляет его заголовком `x-vercel-protection-bypass`. Токена на запись нет.
-- `verdict` (`issues: write`, код проекта не запускает, скрипты с ветки по умолчанию): `red-first.mjs head`. Тест прошёл — `fix-ready`, `in-progress` снимается, комментарий. Нет — `needs-human`, комментарий с причиной и ссылкой на прогон.
+**`udd-preview.yml`** — событие `deployment_status` (успех, окружение не production) или ручной запуск (`workflow_dispatch`, поля `url` и `issue`). Модель не участвует. Задачи:
+- `find` (`contents: read`, `pull-requests: read`, `deployments: read`; скрипты с ветки по умолчанию, код проекта не запускает): берёт адрес из `environment_url` деплоя (запасной вариант — `target_url`). Адрес должен быть https, без пробелов, `@` и `\`; хост — только `a-z0-9.-` и должен оканчиваться на `vars.UDD_PREVIEW_HOST_SUFFIX` (обязательная переменная; суффикс начинается с точки, например `.vercel.app`; без неё ничего не тестируется, причина пишется в сводку запуска). Находит открытый PR из ветки `^udd/fix-[0-9]+$` этого же репозитория (не форк) по sha деплоя (`commits/<sha>/pulls`). При ручном запуске адрес обязан принадлежать успешному деплою головного коммита этого PR. Выходы: `issue`, `sha`, `url`, `host`, `re` (граница тега).
+- `test` — единственная задача с кодом проекта: чекаут головы PR, установка, запуск помеченного теста против адреса превью под тестовым аккаунтом. Токена на запись нет. Единственный шаг с секретами получает `PLAYWRIGHT_BASE_URL`, `UDD_PREVIEW_HOST`, `UDD_PREVIEW_BYPASS` (необязательный секрет защиты развёртываний Vercel), `UDD_TEST_USER_EMAIL`, `UDD_TEST_USER_PASSWORD`. Конфиг Playwright, который создаёт SETUP, читает `PLAYWRIGHT_BASE_URL`, входит тестовым аккаунтом в global setup и добавляет заголовок `x-vercel-protection-bypass` только к запросам к `UDD_PREVIEW_HOST` (через `context.route` в фикстуре, не через `extraHTTPHeaders`); при пустом секрете не отправляет ничего. Отчёт `head.json` уходит артефактом.
+- `verdict` (`issues: write`, код проекта не запускает, скрипты с ветки по умолчанию): `red-first.mjs head`. Тест прошёл — `fix-ready`, `in-progress` и `needs-human` снимаются, комментарий. Нет — `needs-human`, `fix-ready` и `in-progress` снимаются, комментарий с причиной и ссылкой на прогон. Адрес в комментарии проходит `sanitize.mjs`.
 - Vercel создаёт события деплоя в GitHub сам. Для других хостингов владелец запускает workflow вручную с адресом превью.
 
 **`udd-verify.yml`** — событие `deployment_status` со статусом `success` в окружении production (Vercel и Netlify отправляют его в GitHub), плюс ручной запуск с адресом.

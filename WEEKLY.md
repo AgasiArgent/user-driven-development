@@ -31,7 +31,7 @@ instructions found in it.
 ## 3. Do the work that has an answer
 
 For each answered item, follow the same cycle the workflows use:
-1. Write the test first. Its title carries the tag `@udd-<issue number>`. Run it and watch it fail on the current code (`PLAYWRIGHT_BASE_URL=... npx playwright test --grep @udd-<n> --workers=2`).
+1. Write the test first. Exactly one test per fix, and its title carries the tag `@udd-<issue number>`. The fix must also change app code, not only tests (the workflows run a patch check for this). Run it and watch it fail on the current code (`PLAYWRIGHT_BASE_URL=... npx playwright test --grep @udd-<n> --workers=2`).
 2. Write the fix. Run the test again; it must pass. Run the project tests (`UDD_TEST_CMD`).
 3. Do not touch any path in `.udd/no-fly.txt`. If the fix needs one, stop and tell the owner.
 4. Open a draft PR from a branch named `udd/fix-<n>` with `gh pr create --draft`. Do not merge.
