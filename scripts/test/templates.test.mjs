@@ -319,13 +319,14 @@ const modelJobs = () => [
   ["routine agent", job(read("templates/workflows/udd-routine.yml"), "agent")],
 ];
 
-test("file tools: allow only workspace-scoped Read/Edit (+Glob, Grep), deny everything outside the workspace", () => {
+test("file tools: allow only workspace-scoped Read/Edit (Glob and Grep follow the Read rules), deny everything outside the workspace", () => {
   for (const f of ["udd-fix.yml", "udd-research.yml", "udd-routine.yml"]) assert.match(read(`templates/workflows/${f}`), new RegExp(PERM_DOCS.replace(/[/.]/g, "\\$&")), `${f} cites the permission docs`);
   for (const [name, j] of modelJobs()) {
     const allow = argList(j, "--allowedTools");
     const deny = argList(j, "--disallowedTools");
     assert.ok(allow && deny, `${name}: both lists`);
-    assert.deepEqual(allow.sort(), ["Edit(./**)", "Glob", "Grep", "Read(./**)"].sort(), name);
+    // Bare Glob/Grep would be allowed tool-wide; the docs apply Read rules to them, so only path-scoped Read/Edit are granted.
+    assert.deepEqual(allow.sort(), ["Edit(./**)", "Read(./**)"].sort(), name);
     for (const p of DENIED) {
       assert.ok(deny.includes(`Read(${p})`), `${name}: Read(${p}) denied`);
       assert.ok(deny.includes(`Edit(${p})`), `${name}: Edit(${p}) denied`);
@@ -387,9 +388,11 @@ test("fix: publish may dispatch the preview workflow (actions: write on that job
   assert.ok(p.indexOf("gh workflow run udd-preview.yml -f issue=\"$ISSUE\"") > p.indexOf("gh pr create --draft"));
 });
 
-test("research: a daily cap on research and a single global queue", () => {
+test("research: a daily cap on research and a single queue on the agent job only", () => {
   const t = read("templates/workflows/udd-research.yml");
-  assert.match(t, /^concurrency:\n  group: udd-research\n  cancel-in-progress: false$/m);
+  // A workflow-level group would let issue events that the guard skips displace a pending research run.
+  assert.doesNotMatch(t, /^concurrency:/m);
+  assert.match(job(t, "agent"), /concurrency:\n\s+group: udd-research-agent\n\s+cancel-in-progress: false/);
   const g = job(t, "guard");
   assert.match(g, /UDD_RESEARCH_DAILY_CAP \|\| '20'/);
   assert.match(g, /issues\/events/);

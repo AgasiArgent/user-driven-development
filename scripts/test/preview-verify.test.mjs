@@ -256,3 +256,18 @@ test("verify: a tagged spec present in the report but skipped is an ERROR with n
   assert.match(apply, /annotations|\.status == "skipped"|== "skipped"/);
   assert.match(apply, /Skipped\./);
 });
+
+test("preview: a dispatched run that tested nothing tells the issue, and a second verdict for the same issue stops", () => {
+  const t = readFileSync(new URL("../../templates/workflows/udd-preview.yml", import.meta.url), "utf8");
+  assert.match(t, /\n  skipped:\n    needs: find\n    if: \$\{\{ always\(\) && github\.event_name == 'workflow_dispatch' && needs\.find\.outputs\.issue == '' \}\}/);
+  assert.match(t, /--add-label needs-human --remove-label fix-ready,in-progress/);
+  assert.match(t, /group: udd-preview-verdict-\$\{\{ needs\.find\.outputs\.issue \}\}/);
+  assert.match(t, /already has a preview result/);
+});
+
+test("installs enable corepack so pnpm and yarn lockfiles work", () => {
+  for (const f of ["udd-fix.yml", "udd-preview.yml", "udd-verify.yml", "udd-routine.yml"]) {
+    const t = readFileSync(new URL(`../../templates/workflows/${f}`, import.meta.url), "utf8");
+    for (const line of t.split("\n").filter((l) => l.includes('bash -c "$UDD_INSTALL_CMD"'))) assert.match(line, /corepack enable && bash -c/, f);
+  }
+});

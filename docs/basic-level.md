@@ -49,7 +49,7 @@ Repository variables:
 | Name | Default | Meaning |
 |---|---|---|
 | `UDD_AGENT_ENABLED` | off | `true` turns the agent workflows on. |
-| `UDD_INSTALL_CMD` | `npm ci` | Install command, frozen-lockfile form for your package manager (`pnpm install --frozen-lockfile`, `yarn install --immutable`, `bun install --frozen-lockfile`). Run with `bash -c`. |
+| `UDD_INSTALL_CMD` | `npm ci` | Install command, frozen-lockfile form for your package manager (`pnpm install --frozen-lockfile`, `yarn install --immutable`, `npm install -g bun && bun install --frozen-lockfile`; corepack is enabled for pnpm and yarn). Run with `bash -c`. |
 | `UDD_TEST_CMD` | `npm test` | Unit tests. |
 | `UDD_E2E_CMD` | `npx playwright test` | Browser tests. |
 | `UDD_TEST_GLOB` | `**/*.spec.ts,**/*.test.ts,e2e/**` | Which paths count as tests. Only changes to these are kept on the base when checking that the test fails first. |

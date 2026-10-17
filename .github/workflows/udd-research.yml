@@ -20,13 +20,6 @@ on:
 
 permissions: {}
 
-# One research run at a time across the repository. shortcut: GitHub keeps one running and ONE pending run per group,
-# so a burst of issues drops the older pending runs (not cancelling the running one) — re-add the feedback label to
-# research a dropped issue; swap for a queue (workflow_run chain) if bursts are normal.
-concurrency:
-  group: udd-research
-  cancel-in-progress: false
-
 env:
   ISSUE: ${{ github.event.issue.number }}
 
@@ -87,6 +80,12 @@ jobs:
     needs: guard
     if: needs.guard.outputs.proceed == 'true'
     runs-on: ubuntu-latest
+    # One research agent at a time across the repository. The group sits on this job, not on the workflow, so issue
+    # events that the guard skips never take a queue slot. shortcut: GitHub keeps one running and ONE pending job per
+    # group, so a burst drops older pending runs; re-add the feedback label to research a dropped issue.
+    concurrency:
+      group: udd-research-agent
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: read
@@ -135,7 +134,7 @@ jobs:
             4. The test that should fail: what a browser test would do and what it should see, so that it fails today.
           claude_args: |
             --max-turns 20
-            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**)"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # Only the one regular file the agent was asked for leaves this job, and only without a model secret in it.

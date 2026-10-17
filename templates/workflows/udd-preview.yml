@@ -65,6 +65,7 @@ jobs:
       url: ${{ steps.pr.outputs.url }}
       re: ${{ steps.pr.outputs.re }}
       host: ${{ steps.pr.outputs.host }}
+      reason: ${{ steps.pr.outputs.reason }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -89,7 +90,7 @@ jobs:
         id: pr
         run: |
           set -euo pipefail
-          skip() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "issue=" >> "$GITHUB_OUTPUT"; exit 0; }
+          skip() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; { echo "issue="; echo "reason=$1"; } >> "$GITHUB_OUTPUT"; exit 0; }
           if [ "$EVENT" = "workflow_dispatch" ]; then
             url="$INPUT_URL"; sha=""
             case "$INPUT_ISSUE" in ''|*[!0-9]*) skip "The issue input must be a number." ;; esac
@@ -168,7 +169,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       - name: Run the fix's test on the preview
         env:
@@ -187,11 +188,41 @@ jobs:
           path: ${{ runner.temp }}/out/head.json
           if-no-files-found: error
 
+  # A run started by hand (or by udd-fix after it opened the pull request) that tested nothing must say so on the issue;
+  # otherwise the issue waits forever for a preview result. Deployment events for other branches stay silent.
+  skipped:
+    needs: find
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && needs.find.outputs.issue == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ inputs.issue }}
+      REASON: ${{ needs.find.outputs.reason || 'The find job failed before it could test the preview.' }}
+    steps:
+      - name: Tell the issue that the preview was not tested
+        run: |
+          set -euo pipefail
+          case "$ISSUE" in ''|*[!0-9]*) exit 0 ;; esac
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # REASON comes only from the fixed messages of the find job, never from deployment data.
+          printf 'The preview check did not run: %s\n\nRun udd-preview.yml by hand with the preview address, or check UDD_PREVIEW_HOST_SUFFIX. Run: %s\n' "$REASON" "$run_url" > "$RUNNER_TEMP/body.md"
+          gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/body.md"
+          gh issue edit "$ISSUE" --add-label needs-human --remove-label fix-ready,in-progress
+
   verdict:
     needs: [find, test]
     if: ${{ !cancelled() && needs.find.outputs.issue != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The deployment event and the dispatch from udd-fix can test the same fix at the same time; the first verdict
+    # decides, the second sees the label and stops.
+    concurrency:
+      group: udd-preview-verdict-${{ needs.find.outputs.issue }}
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
@@ -222,6 +253,10 @@ jobs:
           jq -e . "$report" > /dev/null 2>&1 || { mkdir -p "$RUNNER_TEMP/in"; echo '{}' > "$report"; }
           # The address is untrusted text: never put it into a comment raw.
           safe_url=$(printf '%s' "$URL" | node .udd/scripts/sanitize.mjs)
+          current=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | join(",")')
+          case ",$current," in *,fix-ready,*|*,needs-human,*)
+            echo "Issue #$ISSUE already has a preview result ($current); nothing to do." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+          esac
           if reason=$(node .udd/scripts/red-first.mjs head "$report" "@udd-$ISSUE"); then
             gh issue edit "$ISSUE" --add-label fix-ready --remove-label in-progress,needs-human
             gh issue comment "$ISSUE" --body "The test for this fix passes on the preview ($safe_url). The draft pull request is ready for review. Run: $run_url"

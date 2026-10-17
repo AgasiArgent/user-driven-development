@@ -146,7 +146,7 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**)"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
@@ -155,7 +155,7 @@ jobs:
       - name: Save the patch
         id: save
         run: |
-          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"; }
+          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null -c core.quotePath=false "$@"; }
           out="$RUNNER_TEMP/out"
           rm -rf "$out"; mkdir -p "$out"
           rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
@@ -275,7 +275,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production
@@ -388,7 +388,7 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**)"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
@@ -397,7 +397,7 @@ jobs:
       - name: Save the patch
         id: save
         run: |
-          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"; }
+          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null -c core.quotePath=false "$@"; }
           out="$RUNNER_TEMP/out"
           rm -rf "$out"; mkdir -p "$out"
           rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
@@ -517,7 +517,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production
@@ -630,7 +630,7 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**)"
             --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
@@ -639,7 +639,7 @@ jobs:
       - name: Save the patch
         id: save
         run: |
-          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"; }
+          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null -c core.quotePath=false "$@"; }
           out="$RUNNER_TEMP/out"
           rm -rf "$out"; mkdir -p "$out"
           rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
@@ -759,7 +759,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production

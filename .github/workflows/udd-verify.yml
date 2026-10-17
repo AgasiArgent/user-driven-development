@@ -97,7 +97,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       - name: Run the tests of shipped fixes
         env:
