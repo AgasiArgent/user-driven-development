@@ -65,6 +65,9 @@ jobs:
         with:
           persist-credentials: false
 
+      # The whole .git as it is before the agent touches the tree; put back after it.
+      - run: tar -C "$GITHUB_WORKSPACE" -cf "$RUNNER_TEMP/dotgit.tar" .git
+
       # Titles of open feedback issues, for the duplicate check. Untrusted text, handed over as a file.
       - name: List open feedback issues
         run: gh issue list -R "$GITHUB_REPOSITORY" --label feedback --state open --limit 100 --json number,title > "$RUNNER_TEMP/open-issues.json"
@@ -100,10 +103,28 @@ jobs:
             --max-turns 20
             --allowedTools "Read,Glob,Grep,Write"
 
+      # Only the one regular file the agent was asked for leaves this job, and only without a model secret in it.
+      - name: Collect the research file and refuse a model secret
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          out="$RUNNER_TEMP/out"
+          rm -rf "$out"; mkdir -p "$out"
+          rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
+          if [ ! -f udd-research.md ] || [ -L udd-research.md ]; then echo "::error::udd-research.md is missing or not a regular file"; exit 1; fi
+          cp udd-research.md "$out/udd-research.md"
+          for S in "$CLAUDE_CODE_OAUTH_TOKEN" "$ANTHROPIC_API_KEY"; do
+            [ -n "$S" ] || continue
+            if grep -rqF -- "$S" "$RUNNER_TEMP/out"; then
+              echo "::error::the agent output contains a model secret; nothing is uploaded"
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: udd-research
-          path: udd-research.md
+          path: ${{ runner.temp }}/out/udd-research.md
           if-no-files-found: error
 
   publish:

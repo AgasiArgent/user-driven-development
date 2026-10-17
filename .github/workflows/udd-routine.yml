@@ -104,8 +104,8 @@ jobs:
           run=$(jq -n --arg r "$ROUTINE" --argjson o "$open" '{routine: $r, openItems: $o}' | node .udd/scripts/routine-guard.mjs)
           if [ "$ROUTINE" = "security" ] && [ "$PRIVATE" != "true" ]; then run=false; fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
-          # Config as it is before the agent touches the tree; restored before git reads it again.
-          cp .git/config "$RUNNER_TEMP/gitconfig"
+          # The whole .git as it is before the agent touches the tree; put back before git reads it again.
+          tar -C "$GITHUB_WORKSPACE" -cf "$RUNNER_TEMP/dotgit.tar" .git
 
       # Input only: the audit ran in a job without secrets. The agent reads the file, nothing executes it.
       - name: Dependency audit result
@@ -140,18 +140,19 @@ jobs:
             --max-turns 40
             --allowedTools "Edit,Write,Read,Glob,Grep"
 
-      # The first thing that runs after the agent. `run` is rewritten here (the agent could have touched the
+      # The first thing that runs after the agent: .git comes back from the tar and git runs without system or
+      # global config, hooks, fsmonitor or attributes file. `run` is rewritten here (the agent could have touched the
       # old file) and the hash of the result is recorded as a job output, the channel the agent cannot reach.
       - name: Save the result
         id: save
         env:
           RUN: ${{ steps.guard.outputs.run }}
         run: |
+          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null "$@"; }
           out="$RUNNER_TEMP/out"
           rm -rf "$out"; mkdir -p "$out"
           echo "$RUN" > "$out/run"
-          cp "$RUNNER_TEMP/gitconfig" .git/config
-          rm -rf .git/hooks
+          rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
           if [ "$RUN" != "true" ]; then
             result="$out/none"; : > "$result"
           elif [ "$ROUTINE" = "security" ]; then
@@ -159,13 +160,26 @@ jobs:
             [ -f udd-findings.json ] && cp udd-findings.json "$result" || echo "[]" > "$result"
           else
             result="$out/agent.patch"
-            git add -A
-            git diff --cached --binary --no-renames --no-ext-diff --no-textconv > "$result"
+            g add -A
+            g diff --cached --binary --no-renames --no-ext-diff --no-textconv > "$result"
           fi
           sum=$(sha256sum "$result" | cut -d' ' -f1)
           echo "$sum" > "$out/sha256"
           echo "sha-$ROUTINE=$sum" >> "$GITHUB_OUTPUT"
 
+      # Nothing the agent wrote may carry the model secret out of this job.
+      - name: Refuse a result that contains a model secret
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          for S in "$CLAUDE_CODE_OAUTH_TOKEN" "$ANTHROPIC_API_KEY"; do
+            [ -n "$S" ] || continue
+            if grep -rqF -- "$S" "$RUNNER_TEMP/out"; then
+              echo "::error::the agent output contains a model secret; nothing is uploaded"
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: routine-${{ matrix.routine }}

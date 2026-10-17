@@ -93,10 +93,10 @@ test("fix: three agent jobs hold the model token and read-only contents, with no
     assert.match(j, /persist-credentials: false/);
     for (const m of j.matchAll(/--allowedTools\s+"([^"]*)"/g)) assert.doesNotMatch(m[1], /Bash/);
     assert.match(j, /@udd-/);
-    // git state is saved before the agent and restored before git reads the tree again
-    assert.match(j, /cp \.git\/config "\$RUNNER_TEMP\/gitconfig"[\s\S]*claude-code-action[\s\S]*cp "\$RUNNER_TEMP\/gitconfig" \.git\/config/);
-    assert.match(j, /rm -rf \.git\/hooks/);
-    assert.match(j, /git diff --cached --binary --no-renames --no-ext-diff --no-textconv/);
+    // the whole .git is saved before the agent and put back before git reads the tree again
+    assert.match(j, /tar -C "\$GITHUB_WORKSPACE" -cf "\$RUNNER_TEMP\/dotgit\.tar" \.git[\s\S]*claude-code-action[\s\S]*rm -rf \.git && tar -C "\$GITHUB_WORKSPACE" -xf "\$RUNNER_TEMP\/dotgit\.tar"/);
+    assert.doesNotMatch(j, /gitconfig|\.git\/hooks/);
+    assert.match(j, /\bg diff --cached --binary --no-renames --no-ext-diff --no-textconv/);
     assert.match(j, /sha256sum/);
     assert.match(j, /outputs:[\s\S]*sha:/);
     assert.match(j, /actions\/upload-artifact@v4/);
@@ -215,4 +215,92 @@ test("model workflows use the subscription token and keep the API key optional",
     assert.match(t, /claude_code_oauth_token: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/);
     assert.match(t, /anthropic_api_key: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/);
   }
+});
+
+// ---- hardening: git metadata, secret scan, patch check, labels ----
+const GIT_HARDENED = /GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=\/dev\/null git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -c core\.attributesFile=\/dev\/null/;
+const stepsOf = (j) => j.split(/^      - /m).slice(1);
+const agentJobs = () => {
+  const fix = read("templates/workflows/udd-fix.yml");
+  return [1, 2, 3].map((n) => [`fix agent-${n}`, job(fix, `agent-${n}`)]).concat([["research agent", job(read("templates/workflows/udd-research.yml"), "agent")]]);
+};
+
+test("agent jobs: .git is restored from a tar and every later git command is hardened", () => {
+  for (const [name, j] of agentJobs()) {
+    assert.match(j, /tar -C "\$GITHUB_WORKSPACE" -cf "\$RUNNER_TEMP\/dotgit\.tar" \.git/, name);
+    assert.match(j, /rm -rf \.git && tar -C "\$GITHUB_WORKSPACE" -xf "\$RUNNER_TEMP\/dotgit\.tar"/, name);
+    assert.ok(j.indexOf("-cf ") < j.indexOf("claude-code-action") && j.indexOf("claude-code-action") < j.indexOf("-xf "), `${name}: tar before the agent, untar after`);
+    assert.doesNotMatch(j, /gitconfig|\.git\/hooks/, name);
+    if (/\bgit (add|diff)\b|\bg add|\bg diff/.test(j)) {
+      assert.match(j, GIT_HARDENED, name);
+      assert.match(j, /--no-ext-diff --no-textconv/, name);
+      assert.doesNotMatch(j, /^\s*git (add|diff)/m, `${name}: bare git after the agent`);
+    }
+  }
+});
+
+test("agent jobs: the artifact is scanned for the model secret literals before upload", () => {
+  for (const [name, j] of agentJobs()) {
+    const steps = stepsOf(j);
+    const agent = steps.findIndex((s) => /claude-code-action/.test(s));
+    const scan = steps.findIndex((s) => /grep -[a-z]*F[a-z]* -- "\$S"/.test(s));
+    const upload = steps.findIndex((s) => /upload-artifact/.test(s));
+    assert.ok(agent >= 0 && scan > agent && upload > scan, `${name}: agent, then scan, then upload`);
+    assert.match(steps[scan], /CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/, name);
+    assert.match(steps[scan], /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/, name);
+    assert.match(steps[scan], /\[ -n "\$S" \]/, `${name}: empty values are skipped`);
+    assert.match(steps[scan], /exit 1/, name);
+    assert.doesNotMatch(steps[scan], /echo[^\n]*\$S\b|printf[^\n]*\$S\b|\$\{S\}/, `${name}: never prints the secret`);
+    assert.doesNotMatch(steps[scan], /RUNS_PROJECT_CODE|npm /, name);
+  }
+});
+
+test("fix: publish checks every attempt with the trusted patch-check before it can win", () => {
+  const p = job(read("templates/workflows/udd-fix.yml"), "publish");
+  assert.match(p, /cp [^\n]*\.udd\/scripts\/patch-check\.mjs[^\n]*trusted/);
+  assert.match(p, /UDD_TEST_GLOB: \$\{\{ vars\.UDD_TEST_GLOB \|\| '\*\*\/\*\.spec\.ts,\*\*\/\*\.test\.ts,e2e\/\*\*' \}\}/);
+  const pick = p.slice(p.indexOf("Pick the winning attempt"), p.indexOf("Ask for a human"));
+  const red = pick.indexOf("trusted/red-first.mjs");
+  const patch = pick.indexOf('node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/patch-$n/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB"');
+  const win = pick.indexOf("winner=$n");
+  assert.ok(red >= 0 && patch > red && win > patch, "both checks gate the winner");
+  assert.doesNotMatch(p, /node \.udd\/scripts/);
+});
+
+test("fix: verdict jobs also run the patch check and pass its reason on", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  for (const n of [1, 2]) {
+    const j = job(t, `verdict-${n}`);
+    assert.match(j, new RegExp(`name: patch-${n}`));
+    assert.match(j, /node \.udd\/scripts\/patch-check\.mjs "[^"]*agent\.patch" "@udd-\$ISSUE" "\$UDD_TEST_GLOB"/);
+    assert.match(j, /UDD_TEST_GLOB: \$\{\{ vars\.UDD_TEST_GLOB/);
+    assert.doesNotMatch(j, /: write|npm ci/);
+    assert.doesNotMatch(j, MODEL_SECRET);
+  }
+  assert.match(job(t, "agent-2"), /patch check/i);
+  assert.match(job(t, "agent-3"), /patch check/i);
+});
+
+test("fix: every label transition sets the full set", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  const SET = (add, rm) => new RegExp(`--add-label ${add}( --remove-label (${rm.join("|")}))+`);
+  const rmOf = (line) => [...line.matchAll(/--remove-label ([\w-]+)/g)].map((m) => m[1]).sort();
+  const edits = (j) => j.split("\n").filter((l) => /gh issue edit/.test(l));
+  const guard = edits(job(t, "guard"));
+  assert.equal(guard.length, 1);
+  assert.match(guard[0], /--add-label in-progress/);
+  assert.deepEqual(rmOf(guard[0]), ["fix-ready", "needs-human", "verified"]);
+  const pub = job(t, "publish");
+  const fails = edits(pub).filter((l) => /--add-label needs-human/.test(l));
+  assert.ok(fails.length >= 3, "no-winner, no-fly and a catch-all failure step");
+  for (const l of fails) assert.deepEqual(rmOf(l), ["fix-ready", "in-progress"]);
+  assert.match(pub, /if: failure\(\)/);
+  const ok = edits(pub).filter((l) => /--add-label in-progress/.test(l));
+  assert.equal(ok.length, 1);
+  assert.deepEqual(rmOf(ok[0]), ["fix-ready", "needs-human", "verified"]);
+  const shipped = edits(job(t, "shipped"));
+  assert.equal(shipped.length, 1);
+  assert.match(shipped[0], /--add-label shipped/);
+  assert.deepEqual(rmOf(shipped[0]), ["fix-ready", "in-progress", "needs-human"]);
+  void SET;
 });

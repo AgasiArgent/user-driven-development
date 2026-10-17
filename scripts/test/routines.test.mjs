@@ -95,7 +95,9 @@ test("integrity: the agent job uploads its result first and records the sha256 a
   const agentStep = steps.findIndex((s) => /claude-code-action/.test(s));
   assert.ok(agentStep < save && save < upload, "agent, then save+hash, then upload");
   assert.equal(upload, steps.length - 1, "nothing runs after the upload");
-  assert.match(steps[save], /gitconfig/, "git config is restored before git touches agent-written files");
+  const scan = steps.findIndex((s) => /grep -[a-z]*F[a-z]* -- "\$S"/.test(s));
+  assert.ok(save < scan && scan < upload, "secret scan between save and upload");
+  assert.match(steps[save], /rm -rf \.git && tar -C "\$GITHUB_WORKSPACE" -xf "\$RUNNER_TEMP\/dotgit\.tar"/, ".git is restored before git touches agent-written files");
 });
 test("integrity: every consumer verifies the sha256 from the agent job output", () => {
   for (const name of ["verify", "publish-pr", "publish-security"]) {
@@ -161,4 +163,24 @@ test("ROUTINES.md is short and cites the advisory docs", () => {
   assert.match(text, /Public repositories/);
   assert.match(text, /known-findings\.json/);
   assert.match(text, /claude-code-security-review/);
+});
+
+test("hardening: .git is tarred before the routine agent and every later git command is hardened", () => {
+  const agent = jobBlock("agent");
+  assert.match(agent, /tar -C "\$GITHUB_WORKSPACE" -cf "\$RUNNER_TEMP\/dotgit\.tar" \.git/);
+  assert.ok(agent.indexOf("-cf ") < agent.indexOf("claude-code-action") && agent.indexOf("claude-code-action") < agent.indexOf("-xf "));
+  assert.doesNotMatch(agent, /gitconfig|\.git\/hooks/);
+  assert.match(agent, /GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=\/dev\/null git -c core\.hooksPath=\/dev\/null -c core\.fsmonitor=false -c core\.attributesFile=\/dev\/null/);
+  assert.match(agent, /--no-ext-diff --no-textconv/);
+  assert.doesNotMatch(agent, /^\s*git (add|diff)/m);
+});
+test("hardening: the routine result is scanned for the model secret literals, never printing them", () => {
+  const steps = stepsOf("agent");
+  const scan = steps.find((s) => /grep -[a-z]*F[a-z]* -- "\$S"/.test(s));
+  assert.ok(scan, "scan step exists");
+  assert.match(scan, /CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/);
+  assert.match(scan, /ANTHROPIC_API_KEY: \$\{\{ secrets\.ANTHROPIC_API_KEY \}\}/);
+  assert.match(scan, /\[ -n "\$S" \]/);
+  assert.match(scan, /exit 1/);
+  assert.doesNotMatch(scan, /echo[^\n]*\$S\b|printf[^\n]*\$S\b|\$\{S\}/);
 });
