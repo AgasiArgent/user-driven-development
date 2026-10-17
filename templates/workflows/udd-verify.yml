@@ -1,0 +1,102 @@
+# Checks shipped fixes in production: runs each fix's own browser test (@udd-<issue>) against the live site.
+# No model is involved. Runs after a successful production deployment, or by hand with a URL.
+# Needs: repository variable UDD_PROD_URL (or the "url" input), a test account in the secrets
+# UDD_TEST_USER_EMAIL and UDD_TEST_USER_PASSWORD. Tests must only touch that account's own data.
+name: udd-verify
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Address of the production site to test
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: udd-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       (github.event.deployment.environment == 'Production' ||
+        github.event.deployment.environment == 'production'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      INPUT_URL: ${{ inputs.url }}
+      VAR_URL: ${{ vars.UDD_PROD_URL }}
+      E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
+      UDD_TEST_USER_EMAIL: ${{ secrets.UDD_TEST_USER_EMAIL }}
+      UDD_TEST_USER_PASSWORD: ${{ secrets.UDD_TEST_USER_PASSWORD }}
+    steps:
+      - id: url
+        run: |
+          url="${INPUT_URL:-$VAR_URL}"
+          if [ -z "$url" ]; then
+            echo "No production address: set the repository variable UDD_PROD_URL, or run this workflow by hand with the url input." >> "$GITHUB_STEP_SUMMARY"
+            echo "url=" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Tests are taken from the deployed commit, so a fix whose test is not there yet is still waiting for its deploy.
+      - uses: actions/checkout@v4
+        if: steps.url.outputs.url != ''
+        with:
+          ref: ${{ github.event.deployment.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: steps.url.outputs.url != ''
+        with:
+          node-version: 24
+      - if: steps.url.outputs.url != ''
+        run: npm ci && npx playwright install --with-deps chromium
+
+      - name: Verify shipped fixes
+        if: steps.url.outputs.url != ''
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue list --state all --label shipped --limit 200 --json number,labels \
+            | jq -c 'map({number, labels: [.labels[].name]})' > "$RUNNER_TEMP/shipped.json"
+          plan=$(node .udd/scripts/verify-plan.mjs < "$RUNNER_TEMP/shipped.json")
+          if [ "$plan" = "[]" ]; then
+            echo "No shipped fixes are waiting for verification." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          for n in $(echo "$plan" | jq -r '.[]'); do
+            report="$RUNNER_TEMP/report-$n.json"
+            PLAYWRIGHT_JSON_OUTPUT_NAME="$report" bash -c "$E2E_CMD"' --grep "$0" --reporter=json' "@udd-$n" > "$RUNNER_TEMP/e2e-$n.log" 2>&1 || true
+            total=$(jq '(.stats.expected // 0) + (.stats.flaky // 0) + (.stats.unexpected // 0)' "$report" 2>/dev/null || echo -1)
+            failed=$(jq '.stats.unexpected // 0' "$report" 2>/dev/null || echo 1)
+            if [ "$total" = "0" ]; then
+              echo "#$n: no test tagged @udd-$n in the deployed commit, so the fix is not deployed yet. Skipped." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$total" -gt 0 ] && [ "$failed" = "0" ]; then passed=true; else passed=false; fi
+            outcome=$(echo "{\"passed\": $passed}" | node .udd/scripts/verify-plan.mjs outcome)
+            add=$(echo "$outcome" | jq -r '.add | join(",")')
+            remove=$(echo "$outcome" | jq -r '.remove | join(",")')
+            gh issue edit "$n" --add-label "$add" --remove-label "$remove"
+            if [ "$passed" = "true" ]; then
+              gh issue comment "$n" --body "Verified in production: the test for this fix passes against $PLAYWRIGHT_BASE_URL. Run: $run_url"
+              if [ "$(echo "$outcome" | jq -r '.close')" = "true" ]; then gh issue close "$n" --reason completed; fi
+            else
+              if [ "$(gh issue view "$n" --json state -q .state)" = "CLOSED" ]; then gh issue reopen "$n"; fi
+              gh issue comment "$n" --body "The test for this fix failed in production, so a developer needs to look. Run: $run_url"
+            fi
+            echo "#$n: passed=$passed" >> "$GITHUB_STEP_SUMMARY"
+          done
