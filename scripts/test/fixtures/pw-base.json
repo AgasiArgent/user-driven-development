@@ -2,5 +2,7 @@
  {"title":"login works @udd-12","tags":[],"tests":[{"results":[{"status":"failed"}]}]},
  {"title":"other","tags":[],"tests":[{"results":[{"status":"passed"}]}]},
  {"title":"flaky one","tags":["udd-13"],"tests":[{"results":[{"status":"failed"},{"status":"passed"}]}]},
- {"title":"tagged passing","tags":["udd-14"],"tests":[{"results":[{"status":"passed"}]}]}
+ {"title":"new test","tags":["udd-15"],"tests":[{"results":[{"status":"failed"}]}]},
+ {"title":"tagged passing","tags":["udd-14"],"tests":[{"results":[{"status":"passed"}]}]},
+ {"title":"broken","tags":["udd-16"],"tests":[{"results":[{"status":"timedOut"}]}]}
 ]}]}]}
