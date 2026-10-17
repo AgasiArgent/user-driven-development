@@ -219,7 +219,7 @@ jobs:
         run: |
           in="$RUNNER_TEMP/in"
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           ok=false; reason=unknown; files='[]'
           if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
           else
@@ -264,7 +264,7 @@ jobs:
       - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
           printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
           [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
@@ -461,7 +461,7 @@ jobs:
         run: |
           in="$RUNNER_TEMP/in"
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           ok=false; reason=unknown; files='[]'
           if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
           else
@@ -506,7 +506,7 @@ jobs:
       - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
           printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
           [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
@@ -703,7 +703,7 @@ jobs:
         run: |
           in="$RUNNER_TEMP/in"
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           ok=false; reason=unknown; files='[]'
           if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
           else
@@ -748,7 +748,7 @@ jobs:
       - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
           printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
           [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
@@ -827,7 +827,7 @@ jobs:
           prepare() {
             local idx="$RUNNER_TEMP/idx-$1" list="$RUNNER_TEMP/changed-$1.list"
             rm -f "$idx"
-            GIT_INDEX_FILE="$idx" git read-tree HEAD && GIT_INDEX_FILE="$idx" git apply --cached "$in/patch-$1/agent.patch" 2> /dev/null || { echo patch-does-not-apply; return 1; }
+            { GIT_INDEX_FILE="$idx" git read-tree HEAD && GIT_INDEX_FILE="$idx" git apply --cached "$in/patch-$1/agent.patch" 2> /dev/null; } || { echo patch-does-not-apply; return 1; }
             GIT_INDEX_FILE="$idx" git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$list"
             node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$list" > /dev/null || { echo no-fly-zone; return 1; }
           }

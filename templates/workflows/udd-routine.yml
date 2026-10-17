@@ -166,7 +166,7 @@ jobs:
             result="$out/none"; : > "$result"
           elif [ "$ROUTINE" = "security" ]; then
             result="$out/findings.json"
-            [ -f udd-findings.json ] && cp udd-findings.json "$result" || echo "[]" > "$result"
+            if [ -f udd-findings.json ]; then cp udd-findings.json "$result"; else echo "[]" > "$result"; fi
           else
             result="$out/agent.patch"
             g add -A
@@ -228,7 +228,7 @@ jobs:
             exit 0
           fi
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           git apply --index "$in/agent.patch"
           echo "apply=true" >> "$GITHUB_OUTPUT"
       - if: steps.apply.outputs.apply == 'true'
@@ -309,7 +309,7 @@ jobs:
           # A patch without a test outcome never becomes a PR: the verify leg did not finish.
           [ -f "$RUNNER_TEMP/outcome/tests" ] || { echo "::error::no test outcome for $ROUTINE"; exit 1; }
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           git switch -c "udd/routine-$ROUTINE-$GITHUB_RUN_ID"
           git apply --index "$in/agent.patch"
           echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -370,9 +370,9 @@ jobs:
           RUN_DATE: ${{ needs.meta.outputs.date }}
         run: |
           in="$RUNNER_TEMP/in"
-          [ -f "$in/run" ] && [ "$(cat "$in/run")" = "true" ] || exit 0
+          { [ -f "$in/run" ] && [ "$(cat "$in/run")" = "true" ]; } || exit 0
           actual=$(sha256sum "$in/findings.json" | cut -d' ' -f1)
-          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::findings sha256 differs from the agent job output"; exit 1; }
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::findings sha256 differs from the agent job output"; exit 1; }
           known='[]'; [ -f .udd/known-findings.json ] && known=$(cat .udd/known-findings.json)
           new=$(jq -n --slurpfile f "$in/findings.json" --argjson k "$known" '{findings: $f[0], known: $k}' | node .udd/scripts/routine-guard.mjs filter)
           [ "$(echo "$new" | jq 'length')" -gt 0 ] || exit 0
