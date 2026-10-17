@@ -64,7 +64,7 @@ test("fix: only a person's approved label on a feedback issue starts the agent",
 });
 
 const MODEL_SECRET = /secrets\.(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)/;
-const RUNS_PROJECT_CODE = /npm ci|UDD_E2E_CMD|UDD_TEST_CMD/;
+const RUNS_PROJECT_CODE = /npm ci|UDD_INSTALL_CMD|UDD_E2E_CMD|UDD_TEST_CMD/;
 const jobsOf = (text) => {
   const body = text.slice(text.search(/^jobs:\n/m));
   return [...body.matchAll(/^  ([a-z][\w-]*):\n/gm)].map((m) => m[1]);
@@ -128,8 +128,9 @@ test("fix: red jobs have no write permission, no model secret, no cache, and run
     assert.doesNotMatch(j, /cache:/);
     assert.match(j, /persist-credentials: false/);
     assert.match(j, /sha256sum/);
-    assert.match(j, /vars\.UDD_TEST_GLOB/);
-    assert.match(j, /npm ci/);
+    assert.doesNotMatch(j, /UDD_TEST_GLOB/, "red applies only the pre-check's testFiles, not the whole glob");
+    assert.match(j, /UDD_INSTALL_CMD: \$\{\{ vars\.UDD_INSTALL_CMD \|\| 'npm ci' \}\}/);
+    assert.match(j, /bash -c "\$UDD_INSTALL_CMD"/);
     assert.match(j, /UDD_E2E_CMD/);
     assert.match(j, /--grep/);
     assert.match(j, /red-first\.mjs regex/);
@@ -140,7 +141,7 @@ test("fix: red jobs have no write permission, no model secret, no cache, and run
     // the verdict is computed elsewhere
     assert.doesNotMatch(j, /red-first\.mjs (base|head)/);
     // the test account secrets are never in scope while dependencies install
-    assert.ok(j.indexOf("npm ci") < j.indexOf("secrets.UDD_TEST_USER_EMAIL"), "test secrets must come after npm ci, on the test step only");
+    assert.ok(j.indexOf('bash -c "$UDD_INSTALL_CMD"') < j.indexOf("secrets.UDD_TEST_USER_EMAIL"), "test secrets must come after the install, on the test step only");
   }
 });
 
@@ -261,20 +262,20 @@ test("fix: publish checks every attempt with the trusted patch-check before it c
   assert.match(p, /UDD_TEST_GLOB: \$\{\{ vars\.UDD_TEST_GLOB \|\| '\*\*\/\*\.spec\.ts,\*\*\/\*\.test\.ts,e2e\/\*\*' \}\}/);
   const pick = p.slice(p.indexOf("Pick the winning attempt"), p.indexOf("Ask for a human"));
   const red = pick.indexOf("trusted/red-first.mjs");
-  const patch = pick.indexOf('node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/patch-$n/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB"');
+  const patch = pick.indexOf('node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/patch-$n/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" --files-z');
   const win = pick.indexOf("winner=$n");
   assert.ok(red >= 0 && patch > red && win > patch, "both checks gate the winner");
   assert.doesNotMatch(p, /node \.udd\/scripts/);
 });
 
-test("fix: verdict jobs also run the patch check and pass its reason on", () => {
+test("fix: verdict jobs take the patch check's reason from pre-check and pass it on", () => {
   const t = read("templates/workflows/udd-fix.yml");
   for (const n of [1, 2]) {
     const j = job(t, `verdict-${n}`);
-    assert.match(j, new RegExp(`name: patch-${n}`));
-    assert.match(j, /node \.udd\/scripts\/patch-check\.mjs "[^"]*agent\.patch" "@udd-\$ISSUE" "\$UDD_TEST_GLOB"/);
-    assert.match(j, /UDD_TEST_GLOB: \$\{\{ vars\.UDD_TEST_GLOB/);
-    assert.doesNotMatch(j, /: write|npm ci/);
+    assert.match(j, new RegExp(`needs\\.pre-check-${n}\\.outputs\\.reason`));
+    assert.match(j, new RegExp(`needs\\.pre-check-${n}\\.outputs\\.ok`));
+    assert.doesNotMatch(j, /patch-check\.mjs/, "no patch-check without the NUL file list");
+    assert.doesNotMatch(j, /: write|npm ci|UDD_INSTALL_CMD/);
     assert.doesNotMatch(j, MODEL_SECRET);
   }
   assert.match(job(t, "agent-2"), /patch check/i);
@@ -303,4 +304,95 @@ test("fix: every label transition sets the full set", () => {
   assert.match(shipped[0], /--add-label shipped/);
   assert.deepEqual(rmOf(shipped[0]), ["fix-ready", "in-progress", "needs-human"]);
   void SET;
+});
+
+// ---- round 2: file-tool scoping, pre-check, install command, research cap, preview trigger ----
+const PERM_DOCS = "https://code.claude.com/docs/en/permissions";
+const DENIED = ["//proc/**", "//sys/**", "//etc/**", "//tmp/**", "//home/runner/work/_temp/**", "~/.*", "~/.*/**"];
+const argList = (j, flag) => {
+  const m = j.match(new RegExp(`${flag}\\s+"([^"]*)"`));
+  return m ? m[1].split(",") : null;
+};
+const modelJobs = () => [
+  ...[1, 2, 3].map((n) => [`fix agent-${n}`, job(read("templates/workflows/udd-fix.yml"), `agent-${n}`)]),
+  ["research agent", job(read("templates/workflows/udd-research.yml"), "agent")],
+  ["routine agent", job(read("templates/workflows/udd-routine.yml"), "agent")],
+];
+
+test("file tools: allow only workspace-scoped Read/Edit (+Glob, Grep), deny everything outside the workspace", () => {
+  for (const f of ["udd-fix.yml", "udd-research.yml", "udd-routine.yml"]) assert.match(read(`templates/workflows/${f}`), new RegExp(PERM_DOCS.replace(/[/.]/g, "\\$&")), `${f} cites the permission docs`);
+  for (const [name, j] of modelJobs()) {
+    const allow = argList(j, "--allowedTools");
+    const deny = argList(j, "--disallowedTools");
+    assert.ok(allow && deny, `${name}: both lists`);
+    assert.deepEqual(allow.sort(), ["Edit(./**)", "Glob", "Grep", "Read(./**)"].sort(), name);
+    for (const p of DENIED) {
+      assert.ok(deny.includes(`Read(${p})`), `${name}: Read(${p}) denied`);
+      assert.ok(deny.includes(`Edit(${p})`), `${name}: Edit(${p}) denied`);
+    }
+    // the docs: only Read and Edit path rules are consulted (Write, Glob, Grep path rules are ignored and warn)
+    for (const r of [...allow, ...deny]) assert.doesNotMatch(r, /^(Write|Glob|Grep|Bash)\(/, `${name}: ${r}`);
+    assert.doesNotMatch(allow.join(), /Bash/);
+  }
+});
+
+test("research: the open-issues list lives in the workspace, because the runner temp dir is denied", () => {
+  const j = job(read("templates/workflows/udd-research.yml"), "agent");
+  assert.doesNotMatch(j, /runner\.temp \}\}\/open-issues\.json/);
+  assert.match(j, /> udd-open-issues\.json/);
+  assert.match(j, /udd-open-issues\.json/);
+});
+
+test("fix: pre-check-N sits between agent-N and red-N, with no secrets, no install, trusted scripts", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  assert.deepEqual(jobsOf(t).filter((n) => /^pre-check-/.test(n)), ["pre-check-1", "pre-check-2", "pre-check-3"]);
+  for (const n of [1, 2, 3]) {
+    const j = job(t, `pre-check-${n}`);
+    assert.match(j, new RegExp(`needs: \\[[^\\]]*agent-${n}`));
+    assert.match(j, /permissions:\s*\n\s+contents: read/);
+    assert.doesNotMatch(j, /: write|secrets\.|setup-node|cache:|claude-code-action/);
+    assert.doesNotMatch(j, RUNS_PROJECT_CODE);
+    assert.match(j, /persist-credentials: false/);
+    assert.match(j, new RegExp(`needs\\.agent-${n}\\.outputs\\.sha`));
+    assert.match(j, /sha256sum/);
+    assert.match(j, /outputs:[\s\S]*ok:[\s\S]*reason:[\s\S]*testFiles:/);
+    assert.ok(j.indexOf("/trusted") < j.indexOf("git apply"), "trusted copies are taken before the patch is applied");
+    assert.match(j, /git -c core\.quotePath=false diff --cached --name-only -z --no-renames/);
+    assert.match(j, /trusted\/no-fly-check\.mjs" -z "\$RUNNER_TEMP\/trusted\/no-fly\.txt"/);
+    assert.match(j, /trusted\/patch-check\.mjs" "[^"]*agent\.patch" "@udd-\$ISSUE" "\$UDD_TEST_GLOB" --files-z/);
+    assert.doesNotMatch(j, /node \.udd\/scripts/);
+    const r = job(t, `red-${n}`);
+    assert.match(r, new RegExp(`needs: \\[[^\\]]*pre-check-${n}`));
+    assert.match(r, new RegExp(`if: [^\n]*needs\\.pre-check-${n}\\.outputs\\.ok == 'true'`));
+    assert.match(r, new RegExp(`needs\\.pre-check-${n}\\.outputs\\.testFiles`));
+    assert.match(r, /xargs -0 -r -a "\$RUNNER_TEMP\/tests\.list" git --literal-pathspecs diff --cached/);
+    assert.match(r, /--literal-pathspecs/);
+  }
+});
+
+test("fix: publish re-runs patch-check and no-fly per attempt from a scratch index", () => {
+  const p = job(read("templates/workflows/udd-fix.yml"), "publish");
+  const pick = p.slice(p.indexOf("Pick the winning attempt"), p.indexOf("Ask for a human"));
+  assert.match(pick, /GIT_INDEX_FILE=/);
+  assert.match(pick, /apply --cached/);
+  assert.match(pick, /trusted\/no-fly-check\.mjs" -z/);
+  assert.match(pick, /name-only -z --no-renames/);
+});
+
+test("fix: publish may dispatch the preview workflow (actions: write on that job only)", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  assert.match(job(t, "publish"), /actions: write/);
+  for (const n of jobsOf(t)) if (n !== "publish") assert.doesNotMatch(job(t, n), /actions: write/, n);
+  const p = job(t, "publish");
+  assert.ok(p.indexOf("gh workflow run udd-preview.yml -f issue=\"$ISSUE\"") > p.indexOf("gh pr create --draft"));
+});
+
+test("research: a daily cap on research and a single global queue", () => {
+  const t = read("templates/workflows/udd-research.yml");
+  assert.match(t, /^concurrency:\n  group: udd-research\n  cancel-in-progress: false$/m);
+  const g = job(t, "guard");
+  assert.match(g, /UDD_RESEARCH_DAILY_CAP \|\| '20'/);
+  assert.match(g, /issues\/events/);
+  assert.match(g, /\.label\.name==\"researched\"|label\.name == \"researched\"/);
+  assert.match(g, /-ge "\$CAP"|>= *"?\$CAP/);
 });

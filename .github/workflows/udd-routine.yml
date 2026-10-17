@@ -10,6 +10,12 @@
 #                      fresh checkout and runs the project tests (UDD_TEST_CMD)
 #   publish-pr       — verifies the sha256 again, applies the patch (draft PR); runs trusted script copies
 #   publish-security — verifies the sha256 again, opens ONE issue per run with a checklist
+# File-tool scope of the coding agent (https://code.claude.com/docs/en/permissions, "Read and Edit"): rules use
+# gitignore syntax; `//path` is an absolute path, `~/` the home directory, `./` the workspace. Only Read and Edit path
+# rules are consulted: Edit covers every tool that changes files (Write included), Read is applied to Glob and Grep, and
+# a Read deny rule also blocks Write/Edit there. A Write, Glob or Grep path rule is ignored (and warns), so none is used.
+# The agent may read and edit inside the workspace only; the process tree, system config, temp dirs (the runner temp
+# dir holds the .git tar) and dot-directories of the home directory are denied. This is a permission rule, not a sandbox.
 name: udd-routine
 
 on:
@@ -103,6 +109,8 @@ jobs:
             | jq -s '[.[][] | {labels: [.labels[].name]}]')
           run=$(jq -n --arg r "$ROUTINE" --argjson o "$open" '{routine: $r, openItems: $o}' | node .udd/scripts/routine-guard.mjs)
           if [ "$ROUTINE" = "security" ] && [ "$PRIVATE" != "true" ]; then run=false; fi
+          # A leg without its prompt file is skipped, not failed.
+          if [ ! -f ".udd/routines/$ROUTINE.md" ]; then echo "::notice::.udd/routines/$ROUTINE.md is missing; skipping $ROUTINE"; run=false; fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           # The whole .git as it is before the agent touches the tree; put back before git reads it again.
           tar -C "$GITHUB_WORKSPACE" -cf "$RUNNER_TEMP/dotgit.tar" .git
@@ -138,7 +146,8 @@ jobs:
           prompt: ${{ steps.prompt.outputs.text }}
           claude_args: |
             --max-turns 40
-            --allowedTools "Edit,Write,Read,Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git comes back from the tar and git runs without system or
       # global config, hooks, fsmonitor or attributes file. `run` is rewritten here (the agent could have touched the
@@ -189,7 +198,8 @@ jobs:
   # No secrets, no cache, no stored credentials: project code runs here and nowhere else.
   verify:
     needs: agent
-    if: ${{ !cancelled() && needs.agent.result == 'success' }}
+    # A skipped or failed agent leg does not stop the others: each leg finds its own artifact (or nothing to do).
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -203,6 +213,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: routine-${{ matrix.routine }}
           path: ${{ runner.temp }}/in
@@ -212,7 +223,7 @@ jobs:
           EXPECTED: ${{ needs.agent.outputs[format('sha-{0}', matrix.routine)] }}
         run: |
           in="$RUNNER_TEMP/in"
-          if [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
+          if [ ! -f "$in/run" ] || [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
             echo "apply=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -224,8 +235,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - if: steps.apply.outputs.apply == 'true'
-        run: npm ci
+      - name: Install
+        if: steps.apply.outputs.apply == 'true'
+        env:
+          UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
+        run: bash -c "$UDD_INSTALL_CMD"
       - name: Project tests
         if: steps.apply.outputs.apply == 'true'
         id: tests
@@ -248,7 +262,8 @@ jobs:
 
   publish-pr:
     needs: [agent, verify]
-    if: ${{ !cancelled() && needs.agent.result == 'success' && needs.verify.result == 'success' }}
+    # Per leg: a leg without an agent result or a test outcome does nothing (or fails alone, see "Apply the change").
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' && needs.verify.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -271,10 +286,12 @@ jobs:
           cp .udd/scripts/no-fly-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/trusted/"
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: routine-${{ matrix.routine }}
           path: ${{ runner.temp }}/in
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: routine-${{ matrix.routine }}-outcome
           path: ${{ runner.temp }}/outcome
@@ -285,10 +302,12 @@ jobs:
           EXPECTED: ${{ needs.agent.outputs[format('sha-{0}', matrix.routine)] }}
         run: |
           in="$RUNNER_TEMP/in"
-          if [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
+          if [ ! -f "$in/run" ] || [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # A patch without a test outcome never becomes a PR: the verify leg did not finish.
+          [ -f "$RUNNER_TEMP/outcome/tests" ] || { echo "::error::no test outcome for $ROUTINE"; exit 1; }
           actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
           [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           git switch -c "udd/routine-$ROUTINE-$GITHUB_RUN_ID"
@@ -328,7 +347,7 @@ jobs:
   publish-security:
     needs: [meta, agent]
     # Review Focus 5: findings about a public repository never go into an issue or a PR.
-    if: ${{ !cancelled() && needs.agent.result == 'success' && needs.meta.outputs.private == 'true' }}
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' && needs.meta.outputs.private == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -340,6 +359,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: routine-security
           path: ${{ runner.temp }}/in
@@ -350,7 +370,7 @@ jobs:
           RUN_DATE: ${{ needs.meta.outputs.date }}
         run: |
           in="$RUNNER_TEMP/in"
-          [ "$(cat "$in/run")" = "true" ] || exit 0
+          [ -f "$in/run" ] && [ "$(cat "$in/run")" = "true" ] || exit 0
           actual=$(sha256sum "$in/findings.json" | cut -d' ' -f1)
           [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::findings sha256 differs from the agent job output"; exit 1; }
           known='[]'; [ -f .udd/known-findings.json ] && known=$(cat .udd/known-findings.json)

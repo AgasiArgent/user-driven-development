@@ -184,3 +184,26 @@ test("hardening: the routine result is scanned for the model secret literals, ne
   assert.match(scan, /exit 1/);
   assert.doesNotMatch(scan, /echo[^\n]*\$S\b|printf[^\n]*\$S\b|\$\{S\}/);
 });
+
+test("guard: a leg whose .udd/routines/<name>.md is missing is skipped", () => {
+  const guard = stepsOf("agent").find((x) => /name: Guard/.test(x));
+  assert.match(guard, /\[ ! -f "\.udd\/routines\/\$ROUTINE\.md" \]/);
+  assert.match(guard, /run=false/);
+});
+test("aggregators tolerate a skipped or failed leg", () => {
+  for (const name of ["verify", "publish-pr", "publish-security"]) {
+    const m = jobBlock(name).match(/if: (?:\$\{\{)?([^\n]*)/);
+    assert.match(m[1], /!cancelled\(\)/, name);
+    assert.doesNotMatch(m[1], /needs\.(agent|verify)\.result == 'success'/, `${name} must not need every leg to succeed`);
+  }
+  for (const name of ["verify", "publish-pr", "publish-security"]) {
+    assert.match(jobBlock(name), /continue-on-error: true/, `${name}: a missing artifact is tolerated`);
+    assert.match(jobBlock(name), /-f "\$in\/run"/, `${name}: a leg without a result does nothing`);
+  }
+});
+test("install: UDD_INSTALL_CMD (default npm ci) runs via bash -c from env", () => {
+  const v = jobBlock("verify");
+  assert.match(v, /UDD_INSTALL_CMD: \$\{\{ vars\.UDD_INSTALL_CMD \|\| 'npm ci' \}\}/);
+  assert.match(v, /bash -c "\$UDD_INSTALL_CMD"/);
+  for (const line of wf.split("\n")) if (!/^\s*#/.test(line)) assert.doesNotMatch(line, /npm ci(?!')/);
+});

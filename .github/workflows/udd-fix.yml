@@ -3,7 +3,7 @@
 # UDD_AGENT_ENABLED=true and one secret: CLAUDE_CODE_OAUTH_TOKEN (Claude Pro/Max subscription) or ANTHROPIC_API_KEY.
 #
 # Repository variables: UDD_PROD_URL (address of the production site; the test must fail there),
-# UDD_E2E_CMD (default "npx playwright test"), UDD_TEST_GLOB (default "**/*.spec.ts,**/*.test.ts,e2e/**";
+# UDD_INSTALL_CMD (default "npm ci"), UDD_E2E_CMD (default "npx playwright test"), UDD_TEST_GLOB (default "**/*.spec.ts,**/*.test.ts,e2e/**";
 # comma-separated, which files of the patch count as tests and are run against production).
 # Secrets: UDD_TEST_USER_EMAIL and UDD_TEST_USER_PASSWORD (a test account).
 #
@@ -16,7 +16,9 @@
 #   guard     — decides whether to run; marks the issue in-progress
 #   agent-N   — holds the model token; reads and edits files, runs NO install, NO tests, NO project code.
 #               Its patch is uploaded and the sha256 of the patch is a job output (a channel the agent cannot reach)
-#   red-N     — NO model token, NO write token, no cache. Applies only the patch's test files to the base commit,
+#   pre-check-N — NO secrets, NO install: verifies the sha256, applies the patch in a scratch checkout and runs the
+#               trusted no-fly and patch checks on the exact NUL-separated file list; outputs the test files
+#   red-N     — NO model token, NO write token, no cache. Applies only the pre-check's test files to the base commit,
 #               installs, and runs the tagged test against production. Produces base.json; computes no verdict
 #   verdict-N — reads base.json with the trusted red-first.mjs and runs patch-check.mjs on the patch; only to decide
 #               whether another attempt is needed (and why)
@@ -24,6 +26,12 @@
 #               of the patch, decides the verdict again, checks no-fly zones, opens a DRAFT PR
 #   shipped   — when a udd/fix-* PR is merged, marks its issue shipped
 # Attempts 2 and 3 run only when the previous red check failed, on a fresh runner, and get that reason.
+# File-tool scope of the coding agent (https://code.claude.com/docs/en/permissions, "Read and Edit"): rules use
+# gitignore syntax; `//path` is an absolute path, `~/` the home directory, `./` the workspace. Only Read and Edit path
+# rules are consulted: Edit covers every tool that changes files (Write included), Read is applied to Glob and Grep, and
+# a Read deny rule also blocks Write/Edit there. A Write, Glob or Grep path rule is ignored (and warns), so none is used.
+# The agent may read and edit inside the workspace only; the process tree, system config, temp dirs (the runner temp
+# dir holds the .git tar) and dot-directories of the home directory are denied. This is a permission rule, not a sandbox.
 name: udd-fix
 
 on:
@@ -138,7 +146,8 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Edit,Write,Read,Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
       # with no system or global config, no hooks, no fsmonitor, no attributes file, no external diff or
@@ -173,17 +182,74 @@ jobs:
           path: ${{ runner.temp }}/out
           if-no-files-found: error
 
-  # No model token, no write token, no cache: project code runs here, and in the preview workflow, and nowhere else.
-  red-1:
+  # No secrets, no install, no project code: the patch is applied in this scratch checkout and judged by the scripts of
+  # the base commit, on the NUL-separated list of the files it really changes. Its test files go to red-1.
+  pre-check-1:
     needs: [guard, agent-1]
     if: ${{ !cancelled() && needs.agent-1.outputs.has_patch == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      ok: ${{ steps.pc.outputs.ok }}
+      reason: ${{ steps.pc.outputs.reason }}
+      testFiles: ${{ steps.pc.outputs.testFiles }}
+    env:
+      EXPECTED: ${{ needs.agent-1.outputs.sha }}
+      UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.base }}
+          persist-credentials: false
+
+      # The scripts and their list come from the base commit: the patch cannot change them.
+      - name: Keep a trusted copy of the scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp .udd/scripts/red-first.mjs .udd/scripts/no-fly-check.mjs .udd/scripts/patch-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/trusted/"
+      - uses: actions/download-artifact@v4
+        with:
+          name: patch-1
+          path: ${{ runner.temp }}/in
+
+      - id: pc
+        name: Verify, apply, check
+        run: |
+          in="$RUNNER_TEMP/in"
+          actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
+          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          ok=false; reason=unknown; files='[]'
+          if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
+          else
+            git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$RUNNER_TEMP/changed.list"
+            if ! node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$RUNNER_TEMP/changed.list" > /dev/null; then reason=no-fly-zone
+            elif ! res=$(node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" --files-z "$RUNNER_TEMP/changed.list"); then
+              reason=$(jq -r '.reason // "unknown"' <<< "$res" 2> /dev/null || echo unknown)
+            else
+              ok=true; reason=ok; files=$(jq -c '.testFiles' <<< "$res")
+            fi
+          fi
+          reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
+          {
+            echo "ok=$ok"
+            echo "reason=${reason:-unknown}"
+            echo "testFiles=$files"
+          } >> "$GITHUB_OUTPUT"
+
+  # No model token, no write token, no cache; project code runs here, and in the preview workflow, and nowhere else.
+  red-1:
+    needs: [guard, agent-1, pre-check-1]
+    if: ${{ !cancelled() && needs.agent-1.outputs.has_patch == 'true' && needs.pre-check-1.outputs.ok == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
     env:
       EXPECTED: ${{ needs.agent-1.outputs.sha }}
-      TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+      TEST_FILES: ${{ needs.pre-check-1.outputs.testFiles }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,23 +261,21 @@ jobs:
           path: ${{ runner.temp }}/in
 
       # The pattern is computed by the script of the base commit, before anything from the patch is in the tree.
-      - name: Verify the patch and keep only its test files
+      - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
           [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
-          specs=()
-          IFS=',' read -ra globs <<< "$TEST_GLOB"
-          for g in "${globs[@]}"; do g="${g// /}"; [ -n "$g" ] && specs+=(":(glob)$g"); done
-          [ "${#specs[@]}" -gt 0 ] || { echo "::error::UDD_TEST_GLOB is empty"; exit 1; }
+          printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
+          [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
           git apply --index "$RUNNER_TEMP/in/agent.patch"
-          git diff --cached --binary --no-renames --no-ext-diff --no-textconv -- "${specs[@]}" > "$RUNNER_TEMP/tests.patch"
+          xargs -0 -r -a "$RUNNER_TEMP/tests.list" git --literal-pathspecs diff --cached --binary --no-renames --no-ext-diff --no-textconv -- > "$RUNNER_TEMP/tests.patch"
           git reset -q --hard HEAD
           if [ -s "$RUNNER_TEMP/tests.patch" ]; then git apply --index "$RUNNER_TEMP/tests.patch"; fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci && npx playwright install --with-deps chromium
+      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production
@@ -232,7 +296,7 @@ jobs:
 
   # Reads the report with the script of the base commit. Runs no project code and holds no token beyond read access.
   verdict-1:
-    needs: [guard, agent-1, red-1]
+    needs: [guard, agent-1, pre-check-1, red-1]
     if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.agent-1.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
@@ -250,20 +314,16 @@ jobs:
         with:
           name: base-1
           path: ${{ runner.temp }}/report
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: patch-1
-          path: ${{ runner.temp }}/in
       - id: v
         env:
           HAS_PATCH: ${{ needs.agent-1.outputs.has_patch }}
-          UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+          PRECHECK_OK: ${{ needs.pre-check-1.outputs.ok }}
+          PRECHECK_REASON: ${{ needs.pre-check-1.outputs.reason }}
         run: |
           if [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
+          elif [ "$PRECHECK_OK" != "true" ]; then ok=false; reason="${PRECHECK_REASON:-precheck-failed}"
           elif [ ! -f "$RUNNER_TEMP/report/base.json" ]; then ok=false; reason=red-run-failed
           elif ! reason=$(node .udd/scripts/red-first.mjs base "$RUNNER_TEMP/report/base.json" "@udd-$ISSUE"); then ok=false
-          elif ! reason=$(node .udd/scripts/patch-check.mjs "$RUNNER_TEMP/in/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" 2>&1); then ok=false
           else ok=true; fi
           reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
@@ -328,7 +388,8 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Edit,Write,Read,Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
       # with no system or global config, no hooks, no fsmonitor, no attributes file, no external diff or
@@ -363,17 +424,74 @@ jobs:
           path: ${{ runner.temp }}/out
           if-no-files-found: error
 
-  # No model token, no write token, no cache: project code runs here, and in the preview workflow, and nowhere else.
-  red-2:
+  # No secrets, no install, no project code: the patch is applied in this scratch checkout and judged by the scripts of
+  # the base commit, on the NUL-separated list of the files it really changes. Its test files go to red-2.
+  pre-check-2:
     needs: [guard, agent-2]
     if: ${{ !cancelled() && needs.agent-2.outputs.has_patch == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      ok: ${{ steps.pc.outputs.ok }}
+      reason: ${{ steps.pc.outputs.reason }}
+      testFiles: ${{ steps.pc.outputs.testFiles }}
+    env:
+      EXPECTED: ${{ needs.agent-2.outputs.sha }}
+      UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.base }}
+          persist-credentials: false
+
+      # The scripts and their list come from the base commit: the patch cannot change them.
+      - name: Keep a trusted copy of the scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp .udd/scripts/red-first.mjs .udd/scripts/no-fly-check.mjs .udd/scripts/patch-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/trusted/"
+      - uses: actions/download-artifact@v4
+        with:
+          name: patch-2
+          path: ${{ runner.temp }}/in
+
+      - id: pc
+        name: Verify, apply, check
+        run: |
+          in="$RUNNER_TEMP/in"
+          actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
+          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          ok=false; reason=unknown; files='[]'
+          if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
+          else
+            git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$RUNNER_TEMP/changed.list"
+            if ! node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$RUNNER_TEMP/changed.list" > /dev/null; then reason=no-fly-zone
+            elif ! res=$(node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" --files-z "$RUNNER_TEMP/changed.list"); then
+              reason=$(jq -r '.reason // "unknown"' <<< "$res" 2> /dev/null || echo unknown)
+            else
+              ok=true; reason=ok; files=$(jq -c '.testFiles' <<< "$res")
+            fi
+          fi
+          reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
+          {
+            echo "ok=$ok"
+            echo "reason=${reason:-unknown}"
+            echo "testFiles=$files"
+          } >> "$GITHUB_OUTPUT"
+
+  # No model token, no write token, no cache; project code runs here, and in the preview workflow, and nowhere else.
+  red-2:
+    needs: [guard, agent-2, pre-check-2]
+    if: ${{ !cancelled() && needs.agent-2.outputs.has_patch == 'true' && needs.pre-check-2.outputs.ok == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
     env:
       EXPECTED: ${{ needs.agent-2.outputs.sha }}
-      TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+      TEST_FILES: ${{ needs.pre-check-2.outputs.testFiles }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -385,23 +503,21 @@ jobs:
           path: ${{ runner.temp }}/in
 
       # The pattern is computed by the script of the base commit, before anything from the patch is in the tree.
-      - name: Verify the patch and keep only its test files
+      - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
           [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
-          specs=()
-          IFS=',' read -ra globs <<< "$TEST_GLOB"
-          for g in "${globs[@]}"; do g="${g// /}"; [ -n "$g" ] && specs+=(":(glob)$g"); done
-          [ "${#specs[@]}" -gt 0 ] || { echo "::error::UDD_TEST_GLOB is empty"; exit 1; }
+          printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
+          [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
           git apply --index "$RUNNER_TEMP/in/agent.patch"
-          git diff --cached --binary --no-renames --no-ext-diff --no-textconv -- "${specs[@]}" > "$RUNNER_TEMP/tests.patch"
+          xargs -0 -r -a "$RUNNER_TEMP/tests.list" git --literal-pathspecs diff --cached --binary --no-renames --no-ext-diff --no-textconv -- > "$RUNNER_TEMP/tests.patch"
           git reset -q --hard HEAD
           if [ -s "$RUNNER_TEMP/tests.patch" ]; then git apply --index "$RUNNER_TEMP/tests.patch"; fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci && npx playwright install --with-deps chromium
+      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production
@@ -422,7 +538,7 @@ jobs:
 
   # Reads the report with the script of the base commit. Runs no project code and holds no token beyond read access.
   verdict-2:
-    needs: [guard, agent-2, red-2]
+    needs: [guard, agent-2, pre-check-2, red-2]
     if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.agent-2.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
@@ -440,20 +556,16 @@ jobs:
         with:
           name: base-2
           path: ${{ runner.temp }}/report
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: patch-2
-          path: ${{ runner.temp }}/in
       - id: v
         env:
           HAS_PATCH: ${{ needs.agent-2.outputs.has_patch }}
-          UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+          PRECHECK_OK: ${{ needs.pre-check-2.outputs.ok }}
+          PRECHECK_REASON: ${{ needs.pre-check-2.outputs.reason }}
         run: |
           if [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
+          elif [ "$PRECHECK_OK" != "true" ]; then ok=false; reason="${PRECHECK_REASON:-precheck-failed}"
           elif [ ! -f "$RUNNER_TEMP/report/base.json" ]; then ok=false; reason=red-run-failed
           elif ! reason=$(node .udd/scripts/red-first.mjs base "$RUNNER_TEMP/report/base.json" "@udd-$ISSUE"); then ok=false
-          elif ! reason=$(node .udd/scripts/patch-check.mjs "$RUNNER_TEMP/in/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" 2>&1); then ok=false
           else ok=true; fi
           reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
@@ -518,7 +630,8 @@ jobs:
             4. Do not commit; the workflow does that.
           claude_args: |
             --max-turns 30
-            --allowedTools "Edit,Write,Read,Glob,Grep"
+            --allowedTools "Read(./**),Edit(./**),Glob,Grep"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
 
       # The first thing that runs after the agent: .git is put back from the tar, the patch is cut by a git
       # with no system or global config, no hooks, no fsmonitor, no attributes file, no external diff or
@@ -553,17 +666,74 @@ jobs:
           path: ${{ runner.temp }}/out
           if-no-files-found: error
 
-  # No model token, no write token, no cache: project code runs here, and in the preview workflow, and nowhere else.
-  red-3:
+  # No secrets, no install, no project code: the patch is applied in this scratch checkout and judged by the scripts of
+  # the base commit, on the NUL-separated list of the files it really changes. Its test files go to red-3.
+  pre-check-3:
     needs: [guard, agent-3]
     if: ${{ !cancelled() && needs.agent-3.outputs.has_patch == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      ok: ${{ steps.pc.outputs.ok }}
+      reason: ${{ steps.pc.outputs.reason }}
+      testFiles: ${{ steps.pc.outputs.testFiles }}
+    env:
+      EXPECTED: ${{ needs.agent-3.outputs.sha }}
+      UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.base }}
+          persist-credentials: false
+
+      # The scripts and their list come from the base commit: the patch cannot change them.
+      - name: Keep a trusted copy of the scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp .udd/scripts/red-first.mjs .udd/scripts/no-fly-check.mjs .udd/scripts/patch-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/trusted/"
+      - uses: actions/download-artifact@v4
+        with:
+          name: patch-3
+          path: ${{ runner.temp }}/in
+
+      - id: pc
+        name: Verify, apply, check
+        run: |
+          in="$RUNNER_TEMP/in"
+          actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
+          [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          ok=false; reason=unknown; files='[]'
+          if ! git apply --index "$in/agent.patch" 2> /dev/null; then reason=patch-does-not-apply
+          else
+            git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$RUNNER_TEMP/changed.list"
+            if ! node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$RUNNER_TEMP/changed.list" > /dev/null; then reason=no-fly-zone
+            elif ! res=$(node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" --files-z "$RUNNER_TEMP/changed.list"); then
+              reason=$(jq -r '.reason // "unknown"' <<< "$res" 2> /dev/null || echo unknown)
+            else
+              ok=true; reason=ok; files=$(jq -c '.testFiles' <<< "$res")
+            fi
+          fi
+          reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
+          {
+            echo "ok=$ok"
+            echo "reason=${reason:-unknown}"
+            echo "testFiles=$files"
+          } >> "$GITHUB_OUTPUT"
+
+  # No model token, no write token, no cache; project code runs here, and in the preview workflow, and nowhere else.
+  red-3:
+    needs: [guard, agent-3, pre-check-3]
+    if: ${{ !cancelled() && needs.agent-3.outputs.has_patch == 'true' && needs.pre-check-3.outputs.ok == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
     env:
       EXPECTED: ${{ needs.agent-3.outputs.sha }}
-      TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
+      TEST_FILES: ${{ needs.pre-check-3.outputs.testFiles }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -575,23 +745,21 @@ jobs:
           path: ${{ runner.temp }}/in
 
       # The pattern is computed by the script of the base commit, before anything from the patch is in the tree.
-      - name: Verify the patch and keep only its test files
+      - name: Verify the patch and keep only the pre-checked test files
         run: |
           actual=$(sha256sum "$RUNNER_TEMP/in/agent.patch" | cut -d' ' -f1)
           [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ] || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
           echo "REGEX=$(node .udd/scripts/red-first.mjs regex "@udd-$ISSUE")" >> "$GITHUB_ENV"
-          specs=()
-          IFS=',' read -ra globs <<< "$TEST_GLOB"
-          for g in "${globs[@]}"; do g="${g// /}"; [ -n "$g" ] && specs+=(":(glob)$g"); done
-          [ "${#specs[@]}" -gt 0 ] || { echo "::error::UDD_TEST_GLOB is empty"; exit 1; }
+          printf %s "$TEST_FILES" | jq -j '.[] + "\u0000"' > "$RUNNER_TEMP/tests.list"
+          [ -s "$RUNNER_TEMP/tests.list" ] || { echo "::error::the pre-check found no test files"; exit 1; }
           git apply --index "$RUNNER_TEMP/in/agent.patch"
-          git diff --cached --binary --no-renames --no-ext-diff --no-textconv -- "${specs[@]}" > "$RUNNER_TEMP/tests.patch"
+          xargs -0 -r -a "$RUNNER_TEMP/tests.list" git --literal-pathspecs diff --cached --binary --no-renames --no-ext-diff --no-textconv -- > "$RUNNER_TEMP/tests.patch"
           git reset -q --hard HEAD
           if [ -s "$RUNNER_TEMP/tests.patch" ]; then git apply --index "$RUNNER_TEMP/tests.patch"; fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci && npx playwright install --with-deps chromium
+      - run: bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
 
       # Only here do the test account secrets exist, and only for the test run.
       - name: Run the tagged test on production
@@ -619,6 +787,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      actions: write # only to dispatch udd-preview.yml after the PR exists
     env:
       GH_TOKEN: ${{ github.token }}
       SHA_1: ${{ needs.agent-1.outputs.sha }}
@@ -653,13 +822,24 @@ jobs:
         run: |
           in="$RUNNER_TEMP/in"
           winner=0; summary=""
+          # The patch is applied to a scratch index (the work tree stays clean); the trusted no-fly check runs on the
+          # exact NUL-separated list of changed files. Prints a reason code and fails when the patch must not win.
+          prepare() {
+            local idx="$RUNNER_TEMP/idx-$1" list="$RUNNER_TEMP/changed-$1.list"
+            rm -f "$idx"
+            GIT_INDEX_FILE="$idx" git read-tree HEAD && GIT_INDEX_FILE="$idx" git apply --cached "$in/patch-$1/agent.patch" 2> /dev/null || { echo patch-does-not-apply; return 1; }
+            GIT_INDEX_FILE="$idx" git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$list"
+            node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$list" > /dev/null || { echo no-fly-zone; return 1; }
+          }
           for n in 1 2 3; do
             eval "expected=\$SHA_$n"
             if [ ! -s "$in/patch-$n/agent.patch" ]; then reason="no-changes"
             elif [ "$(sha256sum "$in/patch-$n/agent.patch" | cut -d' ' -f1)" != "$expected" ] || [ -z "$expected" ]; then reason="patch-sha-mismatch"
             elif [ ! -f "$in/base-$n/base.json" ]; then reason="red-run-failed"
             elif ! reason=$(node "$RUNNER_TEMP/trusted/red-first.mjs" base "$in/base-$n/base.json" "@udd-$ISSUE"); then :
-            elif ! reason=$(node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/patch-$n/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" 2>&1); then :
+            elif ! reason=$(prepare "$n"); then :
+            elif ! res=$(node "$RUNNER_TEMP/trusted/patch-check.mjs" "$in/patch-$n/agent.patch" "@udd-$ISSUE" "$UDD_TEST_GLOB" --files-z "$RUNNER_TEMP/changed-$n.list"); then
+              reason=$(jq -r '.reason // "unknown"' <<< "$res" 2> /dev/null || echo unknown)
             else
               winner=$n; summary="${summary}attempt $n: red on production; "; break
             fi
@@ -724,6 +904,8 @@ jobs:
             echo "Result per attempt: $SUMMARY"
           } > "$RUNNER_TEMP/pr.md"
           gh pr create --draft --head "$BRANCH" --title "Fix #$ISSUE: ${TITLE:0:80}" --body-file "$RUNNER_TEMP/pr.md"
+          # Start the preview check now; the PR is already open, so a refused dispatch is a warning, not a failure.
+          gh workflow run udd-preview.yml -f issue="$ISSUE" || echo "::warning::could not start udd-preview.yml; run it by hand for issue $ISSUE"
           gh issue edit "$ISSUE" --add-label in-progress --remove-label needs-human --remove-label fix-ready --remove-label verified
           gh issue comment "$ISSUE" --body "A draft pull request is open. The new test fails on production as expected. The preview check will follow once the preview deployment of the pull request is ready."
 
