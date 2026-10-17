@@ -24,6 +24,11 @@ export function neutralise(text: string): string {
 }
 
 const quote = (text: string) => neutralise(text).split("\n").map((l) => `> ${l}`).join("\n");
+
+/** GitHub rejects issue bodies over 65536 characters. */
+export const MAX_BODY = 65_000;
+const TRUNCATED = "\n> _(truncated)_";
+const SLOT = "\u0000QUOTE\u0000";
 // Inside a code span Markdown shows HTML literally, so only backticks, newlines and mentions are handled.
 const code = (text: string) => "`" + text.replace(/`/g, "'").replace(/\s*\n\s*/g, " ").replace(/@/g, "@\u200b") + "`";
 
@@ -36,7 +41,7 @@ export function renderIssue(id: number, p: Payload, publicBaseUrl?: string, foot
   const title = `[FB-${id}] ${short.replace(/@/g, "@\u200b")}`;
   const lines = [
     "### Report",
-    quote(p.comment),
+    SLOT,
     "",
     `- **Reporter:** ${p.user ? code(p.user) : "unknown"}`,
     `- **Page:** ${code(p.context.url)}`,
@@ -54,5 +59,10 @@ export function renderIssue(id: number, p: Payload, publicBaseUrl?: string, foot
     lines.push("", "### Failed requests", ...p.context.failedRequests.map((r) => `- ${code(`${r.method} ${r.url} → ${r.status || "network error"}`)}`));
   }
   lines.push("", "---", footer);
-  return { title, body: lines.join("\n"), labels: ["feedback"] };
+  // Only the quoted report is cut; the structured sections and footer stay whole.
+  const rest = lines.join("\n");
+  const room = MAX_BODY - (rest.length - SLOT.length);
+  let q = quote(p.comment);
+  if (q.length > room) q = q.slice(0, room - TRUNCATED.length).replace(/[\ud800-\udbff]$/, "") + TRUNCATED;
+  return { title, body: rest.replace(SLOT, () => q), labels: ["feedback"] };
 }
