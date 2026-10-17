@@ -1,0 +1,177 @@
+# Second half of the fix loop: checks a fix on its preview deployment before a human merges it.
+# The agent wrote one browser test tagged @udd-<issue> (red on production, checked in udd-fix). Here that same
+# test must pass on the preview built from the fix branch. If it does, the issue gets fix-ready; if not, needs-human.
+# Runs after a successful NON-production deployment, or by hand with the url and issue inputs. No model is involved.
+#
+# Needs: a test account in the secrets UDD_TEST_USER_EMAIL and UDD_TEST_USER_PASSWORD.
+# Optional: the secret UDD_PREVIEW_BYPASS, the Vercel Deployment Protection bypass secret. It reaches the tests as the
+# environment variable UDD_PREVIEW_BYPASS; have playwright.config send it as the header x-vercel-protection-bypass.
+#
+# Accepted risk: the test was written by the coding agent and runs against production (udd-fix) and against the preview
+# under the TEST account. Tests must touch only that account's own data.
+#
+# Jobs:
+#   find    — picks the udd/fix-<n> pull request of this repository that owns the deployed commit; runs no project code
+#   test    — the only job that runs project code: read-only token, no stored credentials, no cache, no write token
+#   verdict — decides and changes labels with scripts from the default branch; runs no project code
+name: udd-preview
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Address of the preview deployment to test
+        required: true
+        type: string
+      issue:
+        description: Number of the issue whose fix branch (udd/fix-<number>) is deployed there
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: udd-preview-${{ github.event.deployment.sha || inputs.issue || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  find:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment != 'Production' &&
+       github.event.deployment.environment != 'production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      issue: ${{ steps.pr.outputs.issue }}
+      sha: ${{ steps.pr.outputs.sha }}
+      url: ${{ steps.pr.outputs.url }}
+      re: ${{ steps.pr.outputs.re }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      DEPLOY_SHA: ${{ github.event.deployment.sha }}
+      ENV_URL: ${{ github.event.deployment_status.environment_url }}
+      TARGET_URL: ${{ github.event.deployment_status.target_url }}
+      INPUT_URL: ${{ inputs.url }}
+      INPUT_ISSUE: ${{ inputs.issue }}
+    steps:
+      # Scripts come from the default branch, never from the fix branch.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Find the fix pull request
+        id: pr
+        run: |
+          set -euo pipefail
+          skip() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "issue=" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            url="$INPUT_URL"; sha=""
+            case "$INPUT_ISSUE" in ''|*[!0-9]*) skip "The issue input must be a number." ;; esac
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY%%/*}:udd/fix-$INPUT_ISSUE")
+          else
+            url="${ENV_URL:-$TARGET_URL}"; sha="$DEPLOY_SHA"
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls")
+          fi
+          case "$url" in https://*) ;; *) skip "No https address for the deployment." ;; esac
+          case "$url" in *[[:space:]]*) skip "The deployment address is not valid." ;; esac
+          # Only a fix branch of THIS repository (no forks), still open, and still at the deployed commit.
+          pr=$(echo "$prs" | jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$sha" '
+            [.[] | select(.state == "open"
+                          and .head.repo.full_name == $repo
+                          and (.head.ref | test("^udd/fix-[0-9]+$"))
+                          and ($sha == "" or .head.sha == $sha))] | .[0] // empty')
+          [ -n "$pr" ] || skip "No open udd/fix-<number> pull request of this repository matches this deployment."
+          issue=$(echo "$pr" | jq -r '.head.ref | sub("^udd/fix-"; "")')
+          head_sha=$(echo "$pr" | jq -r '.head.sha')
+          re=$(node .udd/scripts/red-first.mjs regex "@udd-$issue")
+          { echo "issue=$issue"; echo "sha=$head_sha"; echo "url=$url"; echo "re=$re"; } >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: find
+    if: needs.find.outputs.issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_BASE_URL: ${{ needs.find.outputs.url }}
+      TAG_RE: ${{ needs.find.outputs.re }}
+      E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
+      UDD_TEST_USER_EMAIL: ${{ secrets.UDD_TEST_USER_EMAIL }}
+      UDD_TEST_USER_PASSWORD: ${{ secrets.UDD_TEST_USER_PASSWORD }}
+      UDD_PREVIEW_BYPASS: ${{ secrets.UDD_PREVIEW_BYPASS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci && npx playwright install --with-deps chromium
+
+      - name: Run the fix's test on the preview
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          report="$RUNNER_TEMP/out/head.json"
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$report" bash -c "$E2E_CMD"' --grep "$0" --reporter=json' "$TAG_RE" > "$RUNNER_TEMP/e2e.log" 2>&1 || true
+          jq -e . "$report" > /dev/null 2>&1 || echo '{}' > "$report"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-head
+          path: ${{ runner.temp }}/out/head.json
+          if-no-files-found: error
+
+  verdict:
+    needs: [find, test]
+    if: ${{ !cancelled() && needs.find.outputs.issue != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ needs.find.outputs.issue }}
+      URL: ${{ needs.find.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: preview-head
+          path: ${{ runner.temp }}/in
+
+      - name: Decide
+        run: |
+          set -uo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          report="$RUNNER_TEMP/in/head.json"
+          jq -e . "$report" > /dev/null 2>&1 || { mkdir -p "$RUNNER_TEMP/in"; echo '{}' > "$report"; }
+          if reason=$(node .udd/scripts/red-first.mjs head "$report" "@udd-$ISSUE"); then
+            gh issue edit "$ISSUE" --add-label fix-ready --remove-label in-progress
+            gh issue comment "$ISSUE" --body "The test for this fix passes on the preview ($URL). The draft pull request is ready for review. Run: $run_url"
+          else
+            reason="${reason:-unreadable-report}"
+            gh issue edit "$ISSUE" --add-label needs-human --remove-label in-progress
+            gh issue comment "$ISSUE" --body "The test for this fix did not pass on the preview ($URL), so a developer needs to look. Reason: \`$reason\` (no-tagged-test: the test did not run or is missing; fails-on-head: it ran and failed on the preview). Run: $run_url"
+          fi
