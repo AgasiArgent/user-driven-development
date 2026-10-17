@@ -40,10 +40,27 @@ test("bare urls are wrapped in backticks", () => {
 });
 test("urls inside a code fence are wrapped too", () => {
   const out = sanitizeAgentText("```\ncurl https://x.io/a\n```");
-  assert.equal(out, "```\ncurl `https://x.io/a`\n```");
+  assert.equal(out, "\\`\\`\\`\ncurl `https://x.io/a`\n\\`\\`\\`");
 });
-test("already-backticked url is not double wrapped", () => {
-  assert.equal(sanitizeAgentText("`https://x.io/a`"), "`https://x.io/a`");
+test("agent backticks are escaped, the url gets our own span", () => {
+  assert.equal(sanitizeAgentText("`https://x.io/a`"), "\\``https://x.io/a`");
+  assert.equal(sanitizeAgentText("use `foo` here"), "use \\`foo\\` here");
+});
+test("unbalanced backtick before a link cannot pair with our span", () => {
+  const out = sanitizeAgentText("`oops [x](https://evil.example/a) tail");
+  assert.ok(out.startsWith("\\`oops"));
+  assert.ok(!out.includes("]("));
+  assert.equal((out.match(/(?<!\\)`/g) ?? []).length, 2); // only our own pair
+});
+test("triple-backtick fence cannot hide a link or image", () => {
+  const out = sanitizeAgentText("```\n[x](y)\n![a](b)\n```");
+  assert.ok(!/(?<!\\)`/.test(out), out);
+  assert.ok(!out.includes("]("));
+  assert.ok(out.includes("[image removed]"));
+});
+test("url next to a stray backtick", () => {
+  assert.equal(sanitizeAgentText("`https://x.io/a"), "\\``https://x.io/a`");
+  assert.equal(sanitizeAgentText("https://x.io/a`"), "`https://x.io/a`");
 });
 const R = "[redacted]";
 const tokens = {

@@ -11,14 +11,16 @@ const TOKENS = [
   /eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/g,
 ];
 const KEYED = /(?<![A-Za-z])((?:token|key|secret|password)s?[\s:="']+)[A-Za-z0-9+/_=-]{40,}/gi;
-// code span (kept as is) | http(s):// , www. , scheme-relative //host (any case); stops at whitespace, <>, [] and trailing punctuation
-const SPAN_OR_URL =
-  /(`[^`\n]*`)|(?:https?:\/\/|www\.|(?<![\w:/.-])\/\/(?=[A-Za-z0-9]))[^\s<>[\]]*[^\s<>[\].,;:!?)'"]/gi;
+// http(s):// , www. , scheme-relative //host (any case); stops at whitespace, <>, [] and trailing punctuation
+const URL_RE = /(?:https?:\/\/|www\.|(?<![\w:/.-])\/\/(?=[A-Za-z0-9]))[^\s<>[\]]*[^\s<>[\].,;:!?)'"]/gi;
 const IMAGE_MARK = "\u0000";
 const REDACT_MARK = "\u0001";
 
-/** Backslash-escape every Markdown link/image metacharacter so no link, image or reference definition can form. */
-const escapeMarkdown = (t) => t.replace(/\\/g, "\\\\").replace(/!(?=\[)/g, "\\!").replace(/[[\]()]/g, "\\$&");
+/**
+ * Backslash-escape every Markdown metacharacter (links, images, reference definitions, backticks) so agent text
+ * can never open or close a code span or fence; the only code spans in the output are the ones we add around URLs.
+ */
+const escapeMarkdown = (t) => t.replace(/\\/g, "\\\\").replace(/!(?=\[)/g, "\\!").replace(/[[\]()`]/g, "\\$&");
 
 /**
  * Agent output is untrusted: no HTML, no bot-waking mentions (also inside code fences),
@@ -33,8 +35,8 @@ export function sanitizeAgentText(text) {
   s = s.replace(KEYED, `$1${REDACT_MARK}`);
   let out = "";
   let last = 0;
-  for (const m of s.matchAll(SPAN_OR_URL)) {
-    out += escapeMarkdown(s.slice(last, m.index)) + (m[1] ? m[0] : `\`${m[0].replaceAll("`", "")}\``);
+  for (const m of s.matchAll(URL_RE)) {
+    out += escapeMarkdown(s.slice(last, m.index)) + `\`${m[0].replaceAll("`", "")}\``;
     last = m.index + m[0].length;
   }
   out += escapeMarkdown(s.slice(last));

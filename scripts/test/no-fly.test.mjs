@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findViolations, parsePatterns } from "../no-fly-check.mjs";
+import { findViolations, parsePatterns } from "../../templates/scripts/udd/no-fly-check.mjs";
 
 const patterns = parsePatterns(`
 # comment
@@ -37,7 +37,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const cli = join(root, "scripts", "no-fly-check.mjs");
+const cli = join(root, "templates", "scripts", "udd", "no-fly-check.mjs");
 const dir = mkdtempSync(join(tmpdir(), "nofly-"));
 const listFile = join(dir, "list.txt");
 writeFileSync(listFile, "e2e/**\n");
@@ -112,4 +112,12 @@ test("templates/no-fly.txt is covered by .udd/no-fly.txt (superset)", () => {
   const t = parsePatterns(readFileSync(join(root, "templates/no-fly.txt"), "utf8"));
   const u = new Set(parsePatterns(readFileSync(join(root, ".udd/no-fly.txt"), "utf8")));
   assert.deepEqual(t.filter((p) => !u.has(p)), []);
+});
+
+test("scripts/no-fly-check.mjs re-exports the canonical kit module", async () => {
+  const legacy = await import("../no-fly-check.mjs");
+  const canonical = await import("../../templates/scripts/udd/no-fly-check.mjs");
+  assert.equal(legacy.findViolations, canonical.findViolations);
+  assert.equal(legacy.parsePatterns, canonical.parsePatterns);
+  assert.equal(legacy.parseFileList, canonical.parseFileList);
 });

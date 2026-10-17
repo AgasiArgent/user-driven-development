@@ -92,9 +92,9 @@ test("baseVerdict: reasons and tests", () => {
   assert.equal(baseVerdict(null, "@udd-20").reason, "no-tagged-test");
   assert.equal(baseVerdict(b("failed", "x @udd-200"), "@udd-20").reason, "no-tagged-test");
 });
-test("baseVerdict: one passing tagged test among failing ones -> passes-on-base", () => {
+test("baseVerdict: two tagged tests -> multiple-tagged-tests", () => {
   const r = rep([spec("a @udd-20", "failed"), spec("b @udd-20", "passed")]);
-  assert.equal(baseVerdict(r, "@udd-20").reason, "passes-on-base");
+  assert.equal(baseVerdict(r, "@udd-20").reason, "multiple-tagged-tests");
 });
 test("baseVerdict: tagged test absent but tag-like title missing -> base-missing is for combined check only", () => {
   assert.equal(baseVerdict(rep([]), "@udd-20").reason, "no-tagged-test");
@@ -128,4 +128,30 @@ test("CLI modes: base, head, regex, old form", () => {
   assert.deepEqual([r.status, r.stdout.trim()], [0, "@udd-1(?![0-9])"]);
   r = run("base", join(dir, "missing.json"), "@udd-20");
   assert.equal(r.status, 1);
+});
+
+const inFile = (file, specs) => ({ suites: [{ title: file, file, specs: specs.map((s, i) => ({ file, line: 10 + i, ...s })) }] });
+test("same title in two files is two tests -> multiple-tagged-tests", () => {
+  const mk = (st) => ({ suites: [inFile("a.spec.ts", [spec("dup @udd-30", st)]).suites[0], inFile("b.spec.ts", [spec("dup @udd-30", st)]).suites[0]] });
+  assert.equal(headVerdict(mk("passed"), "@udd-30").reason, "multiple-tagged-tests");
+  assert.equal(baseVerdict(mk("failed"), "@udd-30").reason, "multiple-tagged-tests");
+  assert.equal(redFirstVerdict(mk("failed"), mk("passed"), "@udd-30").reason, "multiple-tagged-tests");
+});
+test("same title twice in one file (different lines) is counted twice", () => {
+  const r = inFile("a.spec.ts", [spec("dup @udd-30", "failed"), spec("dup @udd-30", "passed")]);
+  assert.equal(baseVerdict(r, "@udd-30").reason, "multiple-tagged-tests");
+});
+test("two differently titled tagged tests -> multiple-tagged-tests", () => {
+  const r = rep([spec("a @udd-31", "passed"), spec("b", "passed", ["udd-31"])]);
+  assert.equal(headVerdict(r, "@udd-31").reason, "multiple-tagged-tests");
+  assert.equal(redFirstVerdict(r, r, "@udd-31").reason, "multiple-tagged-tests");
+});
+test("multiple tagged tests on base only is also rejected", () => {
+  const b = rep([spec("a @udd-32", "failed"), spec("b @udd-32", "failed")]);
+  const h = rep([spec("a @udd-32", "passed")]);
+  assert.equal(redFirstVerdict(b, h, "@udd-32").reason, "multiple-tagged-tests");
+});
+test("spec.id keys the test when present", () => {
+  const r = rep([{ ...spec("same @udd-33", "passed"), id: "i1" }, { ...spec("same @udd-33", "passed"), id: "i2" }]);
+  assert.equal(headVerdict(r, "@udd-33").reason, "multiple-tagged-tests");
 });

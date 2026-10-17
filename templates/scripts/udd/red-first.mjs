@@ -8,11 +8,13 @@ export function tagRegex(tag) {
   return `${normTag(tag).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`;
 }
 
+/** Every spec carrying the tag, one entry per spec (never merged by title): {key, title, status}. */
 function collect(report, tag) {
   const titleRe = new RegExp(tagRegex(tag));
   const want = normTag(tag);
-  const found = new Map(); // title -> status of last result
-  const walk = (suite) => {
+  const found = [];
+  const walk = (suite, file) => {
+    const f = suite.file ?? file;
     for (const spec of suite.specs ?? []) {
       const tags = (spec.tags ?? []).map(normTag);
       if (!titleRe.test(spec.title ?? "") && !tags.includes(want)) continue;
@@ -24,44 +26,49 @@ function collect(report, tag) {
         if (last !== "passed") status = last;
       }
       if (!tests.length) status = "skipped";
-      found.set(spec.title, status);
+      const key = spec.id ?? `${spec.file ?? f ?? ""}:${spec.line ?? ""}:${spec.title}`;
+      found.push({ key, title: spec.title, status });
     }
-    for (const s of suite.suites ?? []) walk(s);
+    for (const s of suite.suites ?? []) walk(s, f);
   };
-  for (const s of report?.suites ?? []) walk(s);
+  for (const s of report?.suites ?? []) walk(s, s.title);
   return found;
 }
 
 const RED = new Set(["failed", "timedOut", "interrupted"]);
 const verdict = (ok, reason, tests = []) => ({ ok, reason, tests });
 
-/** Production run: every tagged test must exist and be red (failed/timedOut/interrupted). */
+/** Production run: exactly one tagged test must exist and be red (failed/timedOut/interrupted). */
 export function baseVerdict(base, tag) {
   const b = collect(base, tag);
-  if (b.size === 0) return verdict(false, "no-tagged-test");
-  const statuses = [...b.values()];
-  if (statuses.includes("passed")) return verdict(false, "passes-on-base");
+  if (b.length === 0) return verdict(false, "no-tagged-test");
+  if (b.length > 1) return verdict(false, "multiple-tagged-tests");
+  const [t] = b;
+  if (t.status === "passed") return verdict(false, "passes-on-base");
   // skipped / unknown proves nothing
-  if (statuses.some((st) => !RED.has(st))) return verdict(false, "base-missing");
-  return verdict(true, "ok", [...b.keys()]);
+  if (!RED.has(t.status)) return verdict(false, "base-missing");
+  return verdict(true, "ok", [t.title]);
 }
 
-/** Preview run: every tagged test must exist and be green. */
+/** Preview run: exactly one tagged test must exist and be green. */
 export function headVerdict(head, tag) {
   const h = collect(head, tag);
-  if (h.size === 0) return verdict(false, "no-tagged-test");
-  if ([...h.values()].some((st) => st !== "passed")) return verdict(false, "fails-on-head");
-  return verdict(true, "ok", [...h.keys()]);
+  if (h.length === 0) return verdict(false, "no-tagged-test");
+  if (h.length > 1) return verdict(false, "multiple-tagged-tests");
+  if (h[0].status !== "passed") return verdict(false, "fails-on-head");
+  return verdict(true, "ok", [h[0].title]);
 }
 
-/** Both runs of the same tests: red on base, green on head. */
+/** Both runs of the same test: red on base, green on head. */
 export function redFirstVerdict(base, head, tag) {
   const h = collect(head, tag);
-  if (h.size === 0) return verdict(false, "no-tagged-test");
+  if (h.length === 0) return verdict(false, "no-tagged-test");
   const b = collect(base, tag);
+  if (h.length > 1 || b.length > 1) return verdict(false, "multiple-tagged-tests");
   // Only an explicit failure on base is red; absent / skipped / empty base proves nothing.
-  if ([...h.keys()].some((title) => !RED.has(b.get(title)) && b.get(title) !== "passed")) return verdict(false, "base-missing");
-  if ([...h.keys()].some((title) => b.get(title) === "passed")) return verdict(false, "passes-on-base");
+  const bt = b.find((x) => x.key === h[0].key);
+  if (!bt || (!RED.has(bt.status) && bt.status !== "passed")) return verdict(false, "base-missing");
+  if (bt.status === "passed") return verdict(false, "passes-on-base");
   const hv = headVerdict(head, tag);
   return hv.ok ? hv : verdict(false, hv.reason);
 }
