@@ -87,8 +87,6 @@ jobs:
       ITEMS: ${{ needs.plan.outputs.items }}
       PLAYWRIGHT_BASE_URL: ${{ needs.plan.outputs.url }}
       E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
-      UDD_TEST_USER_EMAIL: ${{ secrets.UDD_TEST_USER_EMAIL }}
-      UDD_TEST_USER_PASSWORD: ${{ secrets.UDD_TEST_USER_PASSWORD }}
     steps:
       # Tests are taken from the deployed commit, so a fix whose test is not there yet is still waiting for its deploy.
       - uses: actions/checkout@v4
@@ -101,6 +99,9 @@ jobs:
       - run: npm ci && npx playwright install --with-deps chromium
 
       - name: Run the tests of shipped fixes
+        env:
+          UDD_TEST_USER_EMAIL: ${{ secrets.UDD_TEST_USER_EMAIL }}
+          UDD_TEST_USER_PASSWORD: ${{ secrets.UDD_TEST_USER_PASSWORD }}
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/reports"
@@ -108,13 +109,14 @@ jobs:
             re=$(echo "$ITEMS" | jq -r --argjson n "$n" '.[] | select(.n == $n) | .re')
             report="$RUNNER_TEMP/reports/report-$n.json"
             PLAYWRIGHT_JSON_OUTPUT_NAME="$report" bash -c "$E2E_CMD"' --grep "$0" --reporter=json' "$re" > "$RUNNER_TEMP/e2e-$n.log" 2>&1 < /dev/null || true
-            jq -e . "$report" > /dev/null 2>&1 || echo '{}' > "$report"
+            # A missing or unparsable report stays missing: the apply job treats that as an error.
+            jq -e . "$report" > /dev/null 2>&1 || rm -f "$report"
           done
       - uses: actions/upload-artifact@v4
         with:
           name: verify-reports
           path: ${{ runner.temp }}/reports
-          if-no-files-found: error
+          if-no-files-found: warn
 
   apply:
     needs: [plan, test]
@@ -138,6 +140,7 @@ jobs:
         with:
           node-version: 24
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: verify-reports
           path: ${{ runner.temp }}/reports
@@ -146,8 +149,20 @@ jobs:
         run: |
           set -euo pipefail
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # The address is untrusted text: never put it into a comment raw.
+          safe_url=$(printf '%s' "$PROD_URL" | node .udd/scripts/sanitize.mjs)
+          errors=0
           for n in $(echo "$ITEMS" | jq -r '.[].n'); do
             report="$RUNNER_TEMP/reports/report-$n.json"
+            # Only a real Playwright report (.config object and .suites array) counts. Anything else is an ERROR,
+            # never "not deployed yet".
+            if ! jq -e '(.config | type == "object") and (.suites | type == "array")' "$report" > /dev/null 2>&1; then
+              echo "#$n: ERROR: the Playwright report is missing or unreadable, so the fix could not be checked." >> "$GITHUB_STEP_SUMMARY"
+              gh issue edit "$n" --add-label needs-human
+              gh issue comment "$n" --body "Verification in production could not run: the Playwright report is missing or unreadable, so a developer needs to look. Run: $run_url"
+              errors=$((errors + 1))
+              continue
+            fi
             total=$(jq '(.stats.expected // 0) + (.stats.flaky // 0) + (.stats.unexpected // 0)' "$report" 2>/dev/null || echo -1)
             failed=$(jq '.stats.unexpected // 0' "$report" 2>/dev/null || echo 1)
             if [ "$total" = "0" ]; then
@@ -160,7 +175,7 @@ jobs:
             remove=$(echo "$outcome" | jq -r '.remove | join(",")')
             gh issue edit "$n" --add-label "$add" --remove-label "$remove"
             if [ "$passed" = "true" ]; then
-              gh issue comment "$n" --body "Verified in production: the test for this fix passes against $PROD_URL. Run: $run_url"
+              gh issue comment "$n" --body "Verified in production: the test for this fix passes against $safe_url. Run: $run_url"
               if [ "$(echo "$outcome" | jq -r '.close')" = "true" ]; then gh issue close "$n" --reason completed; fi
             else
               if [ "$(gh issue view "$n" --json state -q .state)" = "CLOSED" ]; then gh issue reopen "$n"; fi
@@ -168,3 +183,7 @@ jobs:
             fi
             echo "#$n: passed=$passed" >> "$GITHUB_STEP_SUMMARY"
           done
+          if [ "$errors" -gt 0 ]; then
+            echo "$errors fix(es) could not be verified because the test report was missing or unreadable." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

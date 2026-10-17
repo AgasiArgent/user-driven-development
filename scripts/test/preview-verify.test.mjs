@@ -126,3 +126,93 @@ test("verify: only successful production deployments or manual runs", () => {
   assert.match(plan, /github\.event\.deployment\.environment == 'production'/);
   assert.match(verify(), /workflow_dispatch:[\s\S]*?url:/);
 });
+
+// ---- hardening: secrets scope, bypass host, host allow-list, sanitised URL, labels, report validity ----
+
+const stepsOf = (job) => job.split(/^      - /m).slice(1);
+const SECRET_RE = /secrets\.UDD_(TEST_USER_EMAIL|TEST_USER_PASSWORD|PREVIEW_BYPASS)/;
+
+test("secrets live only in the env of the one step that runs the tests (both workflows)", () => {
+  for (const [name, t] of [["preview", preview()], ["verify", verify()]]) {
+    const test_ = jobs(t).test;
+    const head = test_.slice(0, test_.search(/^    steps:/m));
+    assert.doesNotMatch(head, SECRET_RE, `${name}: secret at job level`);
+    const withSecrets = stepsOf(test_).filter((s) => SECRET_RE.test(s));
+    assert.equal(withSecrets.length, 1, `${name}: secrets must appear in exactly one step`);
+    assert.match(withSecrets[0], /--grep/, `${name}: that step must be the one running the tests`);
+    assert.doesNotMatch(withSecrets[0], /npm ci|playwright install/);
+    assert.match(withSecrets[0], /UDD_TEST_USER_EMAIL/);
+    assert.match(withSecrets[0], /UDD_TEST_USER_PASSWORD/);
+  }
+  const step = stepsOf(jobs(preview()).test).find((s) => SECRET_RE.test(s));
+  assert.match(step, /secrets\.UDD_PREVIEW_BYPASS/);
+  assert.doesNotMatch(jobs(verify()).test, /UDD_PREVIEW_BYPASS/);
+});
+
+test("preview: bypass is scoped to the preview host and the env contract is documented at the top", () => {
+  const t = preview();
+  const step = stepsOf(jobs(t).test).find((s) => SECRET_RE.test(s));
+  assert.match(step, /UDD_PREVIEW_HOST: \$\{\{ needs\.find\.outputs\.host \}\}/);
+  assert.match(jobs(t).find, /^\s+host: /m);
+  const top = t.slice(0, t.search(/^name:/m));
+  assert.match(top, /UDD_PREVIEW_HOST/);
+  assert.match(top, /UDD_PREVIEW_BYPASS/);
+  assert.match(top, /route|fixture/i);
+  assert.match(top, /only|equals/i);
+});
+
+test("preview: host allow-list by UDD_PREVIEW_HOST_SUFFIX in both modes, https only", () => {
+  const find = jobs(preview()).find;
+  assert.match(find, /vars\.UDD_PREVIEW_HOST_SUFFIX/);
+  assert.match(find, /case "\$url" in https:\/\/\*\)/);
+  assert.match(find, /\[\[:space:\]\]/);
+  assert.match(find, /\$\{?SUFFIX\}?/);
+  // the suffix check happens before any pull request is looked up from the URL, in the shared path
+  assert.match(find.slice(find.search(/Find the fix pull request/)), /SUFFIX/);
+  assert.match(find, /host.*\$SUFFIX|\$SUFFIX.*host/s);
+  // empty suffix means stop, never allow-all
+  assert.match(find, /-z "\$SUFFIX"/);
+  // userinfo / port / backslash tricks in the authority are rejected
+  assert.match(find, /@/);
+});
+
+test("preview: dispatch mode requires a successful deployment of the PR head sha with the same host", () => {
+  const find = jobs(preview()).find;
+  assert.match(find, /deployments: read/);
+  assert.match(find, /repos\/\$GITHUB_REPOSITORY\/deployments\?sha=\$head_sha|deployments\?sha=/);
+  assert.match(find, /\/statuses/);
+  assert.match(find, /environment_url/);
+  assert.match(find, /state == "success"|\.state == "success"/);
+  assert.match(find, /"\$EVENT" = "workflow_dispatch"[\s\S]*deployments\?sha=/);
+});
+
+test("preview: the URL is untrusted text, passed through sanitize.mjs before any comment", () => {
+  const verdict = jobs(preview()).verdict;
+  assert.match(verdict, /node \.udd\/scripts\/sanitize\.mjs/);
+  assert.doesNotMatch(verdict, /--body "[^"]*\$URL/);
+  assert.doesNotMatch(verdict, /--body "[^"]*\$\{URL/);
+  assert.match(verdict, /--body "[^"]*\$safe_url/);
+  assert.doesNotMatch(jobs(verify()).apply, /--body "[^"]*\$PROD_URL/);
+  assert.match(jobs(verify()).apply, /sanitize\.mjs/);
+});
+
+test("preview: full label set on each transition", () => {
+  const v = jobs(preview()).verdict;
+  assert.match(v, /--add-label fix-ready --remove-label in-progress,needs-human/);
+  assert.match(v, /--add-label needs-human --remove-label fix-ready,in-progress/);
+});
+
+test("verify: a missing or unparsable report is an error, only a valid empty report means skipped", () => {
+  const t = verify();
+  const apply = jobs(t).apply;
+  assert.match(apply, /\.config/);
+  assert.match(apply, /\.suites/);
+  assert.match(apply, /--add-label needs-human/);
+  assert.match(apply, /exit 1|errors/);
+  const errAt = apply.search(/needs-human/);
+  const skipAt = apply.search(/Skipped/);
+  assert.ok(errAt > -1 && skipAt > -1);
+  assert.match(apply, /ERROR/);
+  // the test job must not paper a broken run over with an empty-but-valid report
+  assert.doesNotMatch(jobs(t).test, /echo '\{\}' > "\$report"[\s\S]*suites/);
+});
