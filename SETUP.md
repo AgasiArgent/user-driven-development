@@ -203,7 +203,7 @@ Repository variables you set yourself (`gh variable set NAME --body VALUE`):
 Secrets the **owner** enters. Tell the owner the name, where to get it, and the command. You never see or print the value:
 - `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` in their terminal (Claude Pro or Max), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`. An API key in `ANTHROPIC_API_KEY` works instead; then set a monthly spend limit on it.
 - `UDD_TEST_USER_EMAIL` and `UDD_TEST_USER_PASSWORD`: the test account from question 4, set the same way.
-- `UDD_PREVIEW_BYPASS` (optional, Vercel only): in Vercel open Project, Settings, Deployment Protection, Protection Bypass for Automation, create a secret, then `gh secret set UDD_PREVIEW_BYPASS`. Without it, previews behind Vercel's login page cannot be tested.
+- `UDD_PREVIEW_BYPASS` (required on Vercel while Deployment Protection is on, which is the default for previews): in Vercel open Project, Settings, Deployment Protection, Protection Bypass for Automation, create a secret, then `gh secret set UDD_PREVIEW_BYPASS`. Without it every preview answers with Vercel's login page and the preview check fails.
 - `UDD_GITHUB_TOKEN` (section 4) goes into the app's own hosting environment variables, not into GitHub secrets and not into code.
 
 ### 8a. How the preview check starts
@@ -211,6 +211,7 @@ Secrets the **owner** enters. Tell the owner the name, where to get it, and the 
 `udd-preview.yml` tests the fix branch `udd/fix-<n>` against its preview address. It starts
 automatically: `udd-fix.yml` runs `gh workflow run udd-preview.yml -f issue=<n>` right after it creates the
 draft PR, and Vercel's deployment events start it too.
+- Vercel sends those events only if Project, Settings, Git, "`deployment_status` Events" is on. On new projects it can be off. Check: push any branch and run `gh api repos/<owner>/<repo>/deployments --jq '.[0].environment'`; it must print `Preview`. If it prints nothing, turn the toggle on (or ask the owner to). Without it the preview and production checks start only by hand.
 - With no `url`, the workflow polls the GitHub deployments of the PR head commit (every 30 seconds, up to 20 minutes) until one succeeds in a non-production environment, and tests its address. The host must still end with `UDD_PREVIEW_HOST_SUFFIX`.
 - By hand (`workflow_dispatch`), with no URL: `gh workflow run udd-preview.yml -f issue=<n>`. If the host does not report deployments to GitHub, pass the address: `gh workflow run udd-preview.yml -f url=<preview address> -f issue=<n>`.
 - Production deployments start `udd-verify.yml` the same way, by hand: `gh workflow run udd-verify.yml -f url=<address>`.

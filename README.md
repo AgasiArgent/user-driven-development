@@ -76,6 +76,7 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 - The agent's file access is limited to the repository checkout by permission rules (see the comment at the top of `udd-fix.yml`). That is a permission rule, not a sandbox.
 - Research runs automatically on every report, with no approval. `UDD_RESEARCH_DAILY_CAP` (default 20) limits how much of your subscription that can use per day.
 - The database step is optional. Without one, a report can be lost if GitHub is down.
+- The preview and production checks start from GitHub `deployment_status` events. Vercel now recommends its `repository_dispatch` events instead; switching to them is open work.
 
 ## Try it first
 
