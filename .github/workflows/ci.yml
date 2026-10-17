@@ -30,10 +30,10 @@ jobs:
           set -euo pipefail
           V=1.7.12
           B=https://github.com/rhysd/actionlint/releases/download/v$V
-          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" "$B/actionlint_${V}_linux_amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/actionlint_${V}_linux_amd64.tar.gz" "$B/actionlint_${V}_linux_amd64.tar.gz"
           curl -sSfL -o "$RUNNER_TEMP/checksums.txt" "$B/actionlint_${V}_checksums.txt"
           (cd "$RUNNER_TEMP" && grep " actionlint_${V}_linux_amd64.tar.gz\$" checksums.txt | sha256sum -c -)
-          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          tar -xzf "$RUNNER_TEMP/actionlint_${V}_linux_amd64.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" templates/workflows/*.yml .github/workflows/*.yml
       - uses: actions/setup-node@v4
         with:
