@@ -411,3 +411,11 @@ test("fix: an attempt with no changes is terminal: no further attempt, comment, 
   assert.match(publish, /found nothing to change/);
   assert.match(publish, /steps\.pick\.outputs\.terminal/);
 });
+
+test("fix: a crashed agent is retried (agent-failed); only a finished agent with no patch stops the loop", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  assert.match(t, /if \[ "\$AGENT_RESULT" != "success" \]; then ok=false; reason=agent-failed/);
+  assert.match(t, /AGENT_RESULT: \$\{\{ needs\.agent-1\.result \}\}/);
+  assert.match(t, /if \[ "\$ares" != "success" \]; then reason="agent-failed"/);
+  assert.match(t, /RESULT_3: \$\{\{ needs\.agent-3\.result \}\}/);
+});

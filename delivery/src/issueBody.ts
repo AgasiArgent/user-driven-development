@@ -39,6 +39,11 @@ const BASIC_FOOTER = "Add the label `approved` to let the coding agent work on t
 
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
+/** The reporter as shown in an issue: the opaque id when it is well-formed, never an email or a name. */
+export function reporterLabel(p: { reporterId?: unknown }): string {
+  return typeof p.reporterId === "string" && OPAQUE_ID.test(p.reporterId) ? p.reporterId : "unknown";
+}
+
 /** At most 80 characters; cut at a word boundary unless there is no space in the last 20 characters. */
 export function shortTitle(line: string): string {
   const chars = Array.from(line);
@@ -58,7 +63,7 @@ export function renderIssue(id: number, p: Payload, publicBaseUrl?: string, foot
     "### Report",
     SLOT,
     "",
-    `- **Reporter:** ${p.reporterId && OPAQUE_ID.test(p.reporterId) ? code(p.reporterId) : "unknown"}`,
+    `- **Reporter:** ${reporterLabel(p) === "unknown" ? "unknown" : code(reporterLabel(p))}`,
     `- **Page:** ${code(p.context.url)}`,
   ];
   if (p.target) {

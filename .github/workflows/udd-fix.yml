@@ -317,10 +317,13 @@ jobs:
       - id: v
         env:
           HAS_PATCH: ${{ needs.agent-1.outputs.has_patch }}
+          AGENT_RESULT: ${{ needs.agent-1.result }}
           PRECHECK_OK: ${{ needs.pre-check-1.outputs.ok }}
           PRECHECK_REASON: ${{ needs.pre-check-1.outputs.reason }}
         run: |
-          if [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
+          # A crashed or timed-out agent is a failure to retry, not an answer; only a finished agent with no patch is "no-changes".
+          if [ "$AGENT_RESULT" != "success" ]; then ok=false; reason=agent-failed
+          elif [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
           elif [ "$PRECHECK_OK" != "true" ]; then ok=false; reason="${PRECHECK_REASON:-precheck-failed}"
           elif [ ! -f "$RUNNER_TEMP/report/base.json" ]; then ok=false; reason=red-run-failed
           elif ! reason=$(node .udd/scripts/red-first.mjs base "$RUNNER_TEMP/report/base.json" "@udd-$ISSUE"); then ok=false
@@ -559,10 +562,13 @@ jobs:
       - id: v
         env:
           HAS_PATCH: ${{ needs.agent-2.outputs.has_patch }}
+          AGENT_RESULT: ${{ needs.agent-2.result }}
           PRECHECK_OK: ${{ needs.pre-check-2.outputs.ok }}
           PRECHECK_REASON: ${{ needs.pre-check-2.outputs.reason }}
         run: |
-          if [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
+          # A crashed or timed-out agent is a failure to retry, not an answer; only a finished agent with no patch is "no-changes".
+          if [ "$AGENT_RESULT" != "success" ]; then ok=false; reason=agent-failed
+          elif [ "$HAS_PATCH" != "true" ]; then ok=false; reason=no-changes
           elif [ "$PRECHECK_OK" != "true" ]; then ok=false; reason="${PRECHECK_REASON:-precheck-failed}"
           elif [ ! -f "$RUNNER_TEMP/report/base.json" ]; then ok=false; reason=red-run-failed
           elif ! reason=$(node .udd/scripts/red-first.mjs base "$RUNNER_TEMP/report/base.json" "@udd-$ISSUE"); then ok=false
@@ -793,6 +799,9 @@ jobs:
       SHA_1: ${{ needs.agent-1.outputs.sha }}
       SHA_2: ${{ needs.agent-2.outputs.sha }}
       SHA_3: ${{ needs.agent-3.outputs.sha }}
+      RESULT_1: ${{ needs.agent-1.result }}
+      RESULT_2: ${{ needs.agent-2.result }}
+      RESULT_3: ${{ needs.agent-3.result }}
       UDD_TEST_GLOB: ${{ vars.UDD_TEST_GLOB || '**/*.spec.ts,**/*.test.ts,e2e/**' }}
     steps:
       - uses: actions/checkout@v4
@@ -832,8 +841,9 @@ jobs:
             node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$list" > /dev/null || { echo no-fly-zone; return 1; }
           }
           for n in 1 2 3; do
-            eval "expected=\$SHA_$n"
-            if [ ! -s "$in/patch-$n/agent.patch" ]; then reason="no-changes"
+            eval "expected=\$SHA_$n"; eval "ares=\$RESULT_$n"
+            if [ "$ares" != "success" ]; then reason="agent-failed"
+            elif [ ! -s "$in/patch-$n/agent.patch" ]; then reason="no-changes"
             elif [ "$(sha256sum "$in/patch-$n/agent.patch" | cut -d' ' -f1)" != "$expected" ] || [ -z "$expected" ]; then reason="patch-sha-mismatch"
             elif [ ! -f "$in/base-$n/base.json" ]; then reason="red-run-failed"
             elif ! reason=$(node "$RUNNER_TEMP/trusted/red-first.mjs" base "$in/base-$n/base.json" "@udd-$ISSUE"); then :
@@ -848,9 +858,7 @@ jobs:
             # An agent that changed nothing has given its answer: more attempts would only invent a different problem.
             if [ "$reason" = "no-changes" ]; then terminal=no-changes; break; fi
           done
-          echo "winner=$winner" >> "$GITHUB_OUTPUT"
-          echo "terminal=$terminal" >> "$GITHUB_OUTPUT"
-          echo "summary=${summary%; }" >> "$GITHUB_OUTPUT"
+          { echo "winner=$winner"; echo "terminal=$terminal"; echo "summary=${summary%; }"; } >> "$GITHUB_OUTPUT"
 
       # Three failed attempts (or a crashed job): no PR, a human takes over.
       - name: Ask for a human

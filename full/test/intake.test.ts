@@ -46,6 +46,16 @@ describe("intakeOnce", () => {
     expect((await rows()).map((r) => r.issue_ref)).toEqual(["MEM-1", "MEM-1"]);
   });
 
+  it("never writes the reporter's email into the duplicate-report comment", async () => {
+    await addReport("The Book button is cut off");
+    await addReport("the book button is cut off!", { user: "bob@example.com", reporterId: "a1b2c3d4e5f6" });
+    const tracker = new MemoryTracker();
+    await intakeOnce(db, tracker, repo, { rules });
+    const comment = tracker.comments.get("mem-1")?.[0] ?? "";
+    expect(comment).not.toContain("bob@example.com");
+    expect(comment).toContain("a1b2c3d4e5f6");
+  });
+
   it("labels a report in a no-fly area so the dispatcher never takes it", async () => {
     await addReport("Payment total is wrong");
     const tracker = new MemoryTracker();
