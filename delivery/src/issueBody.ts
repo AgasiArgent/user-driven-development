@@ -4,7 +4,10 @@ import type { NewIssue } from "./github.ts";
 export interface Payload {
   comment: string;
   createdAt: string;
+  /** Ignored for the issue body: a raw user identifier (email) must never reach a possibly public repo. */
   user?: string;
+  /** Opaque reporter id computed by the app, e.g. HMAC-SHA256(userId, server secret) cut to 12 hex chars. */
+  reporterId?: string;
   target?: { selector: string; tagName: string; text?: string };
   context: {
     url: string;
@@ -34,16 +37,28 @@ const code = (text: string) => "`" + text.replace(/`/g, "'").replace(/\s*\n\s*/g
 
 const BASIC_FOOTER = "Add the label `approved` to let the coding agent work on this. Close it as *not planned* to reject it.";
 
+const OPAQUE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** At most 80 characters; cut at a word boundary unless there is no space in the last 20 characters. */
+export function shortTitle(line: string): string {
+  const chars = Array.from(line);
+  if (chars.length <= 80) return line;
+  const head = chars.slice(0, 79);
+  const space = head.lastIndexOf(" ");
+  const cut = space >= 79 - 20 ? head.slice(0, space) : head;
+  return cut.join("").trimEnd() + "…";
+}
+
 export function renderIssue(id: number, p: Payload, publicBaseUrl?: string, footer = BASIC_FOOTER): NewIssue {
   const firstLine = p.comment.split("\n")[0].trim();
   // Titles are shown as plain text: only mentions need neutralising.
-  const short = Array.from(firstLine).length > 80 ? Array.from(firstLine).slice(0, 79).join("") + "…" : firstLine;
+  const short = shortTitle(firstLine);
   const title = `[FB-${id}] ${short.replace(/@/g, "@\u200b")}`;
   const lines = [
     "### Report",
     SLOT,
     "",
-    `- **Reporter:** ${p.user ? code(p.user) : "unknown"}`,
+    `- **Reporter:** ${p.reporterId && OPAQUE_ID.test(p.reporterId) ? code(p.reporterId) : "unknown"}`,
     `- **Page:** ${code(p.context.url)}`,
   ];
   if (p.target) {

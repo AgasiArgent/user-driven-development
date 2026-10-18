@@ -27,3 +27,13 @@ test("labels", () => {
   assert.equal(Object.keys(LABEL_COLORS).length, 13);
   for (const c of Object.values(LABEL_COLORS)) assert.match(c, /^[0-9a-f]{6}$/);
 });
+
+test("reference my-feedback.md carries statusFromIssue byte-for-byte and stays short", async () => {
+  const { readFileSync } = await import("node:fs");
+  const ref = readFileSync(new URL("../../templates/reference/my-feedback.md", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../../templates/scripts/udd/status.mjs", import.meta.url), "utf8");
+  assert.ok(ref.includes(src.slice(src.indexOf("const RULES")).trim()));
+  assert.ok(ref.split("\n").length <= 120);
+  assert.match(ref, /no-store/);
+  assert.match(ref, /screenshot not kept/);
+});
