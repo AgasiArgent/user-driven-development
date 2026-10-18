@@ -14,7 +14,8 @@ test("workflow: weekly schedule + manual run", () => {
   assert.match(wf, /workflow_dispatch:/);
 });
 test("workflow: matrix over the three routines", () => {
-  assert.match(wf, /routine:\s*\[dead-code, duplicates, security\]/);
+  assert.match(wf, /routines=\["dead-code","duplicates","security"\]/);
+  assert.match(jobBlock("agent"), /routine: \$\{\{ fromJSON\(needs\.meta\.outputs\.routines\) \}\}/);
 });
 test("workflow: guard calls routine-guard.mjs and publish filters known findings", () => {
   assert.match(wf, /\.udd\/scripts\/routine-guard\.mjs/);
@@ -206,4 +207,14 @@ test("install: UDD_INSTALL_CMD (default npm ci) runs via bash -c from env", () =
   assert.match(v, /UDD_INSTALL_CMD: \$\{\{ vars\.UDD_INSTALL_CMD \|\| 'npm ci' \}\}/);
   assert.match(v, /bash -c "\$UDD_INSTALL_CMD"/);
   for (const line of wf.split("\n")) if (!/^\s*#/.test(line)) assert.doesNotMatch(line, /npm ci(?!')/);
+});
+
+test("public repository: the security leg is not in the matrix, so no runner or agent starts", () => {
+  const meta = jobBlock("meta");
+  assert.match(meta, /if \[ "\$private" = "true" \]; then echo 'routines=\["dead-code","duplicates","security"\]'/);
+  assert.match(meta, /else echo 'routines=\["dead-code","duplicates"\]'/);
+  assert.match(meta, /routines: \$\{\{ steps\.repo\.outputs\.routines \}\}/);
+  // the step-level guard stays as a second line of defence
+  const guard = stepsOf("agent").find((x) => /name: Guard/.test(x));
+  assert.match(guard, /"\$ROUTINE" = "security" \] && \[ "\$PRIVATE" != "true"/);
 });

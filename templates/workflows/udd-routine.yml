@@ -38,6 +38,7 @@ jobs:
     outputs:
       private: ${{ steps.repo.outputs.private }}
       date: ${{ steps.repo.outputs.date }}
+      routines: ${{ steps.repo.outputs.routines }}
     steps:
       # Asked from the API: a scheduled run has no reliable event payload to read this from
       # (github.event.repository.private is not set on schedule events).
@@ -45,7 +46,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" >> "$GITHUB_OUTPUT"
+          private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+          if [ "$private" = "true" ]; then echo 'routines=["dead-code","duplicates","security"]' >> "$GITHUB_OUTPUT"
+          else echo 'routines=["dead-code","duplicates"]' >> "$GITHUB_OUTPUT"; fi
           echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
   # No secrets here: `npm audit` reads only the lockfile and runs no package script.
@@ -85,7 +89,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        routine: [dead-code, duplicates, security]
+        # Rule 7.3: in a public repository the security leg is not in the matrix at all (its result would be discarded).
+        routine: ${{ fromJSON(needs.meta.outputs.routines) }}
     # One output per routine: matrix legs must not overwrite each other's value.
     outputs:
       sha-dead-code: ${{ steps.save.outputs.sha-dead-code }}

@@ -399,3 +399,15 @@ test("research: a daily cap on research and a single queue on the agent job only
   assert.match(g, /\.label\.name==\"researched\"|label\.name == \"researched\"/);
   assert.match(g, /-ge "\$CAP"|>= *"?\$CAP/);
 });
+
+test("fix: an attempt with no changes is terminal: no further attempt, comment, needs-human", () => {
+  const t = read("templates/workflows/udd-fix.yml");
+  assert.match(job(t, "agent-2"), /needs\.verdict-1\.outputs\.reason != 'no-changes'/);
+  const a3 = job(t, "agent-3");
+  assert.match(a3, /needs\.verdict-1\.outputs\.reason != 'no-changes'/);
+  assert.match(a3, /needs\.verdict-2\.outputs\.reason != 'no-changes'/);
+  const publish = job(t, "publish");
+  assert.match(publish, /terminal=no-changes; break/);
+  assert.match(publish, /found nothing to change/);
+  assert.match(publish, /steps\.pick\.outputs\.terminal/);
+});

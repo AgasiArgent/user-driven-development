@@ -331,7 +331,7 @@ jobs:
 
   agent-2:
     needs: [guard, verdict-1]
-    if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.verdict-1.outputs.ok != 'true' }}
+    if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.verdict-1.outputs.ok != 'true' && needs.verdict-1.outputs.reason != 'no-changes' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -359,7 +359,7 @@ jobs:
           prompt: |
             You are fixing issue #${{ github.event.issue.number }} in ${{ github.repository }}. This is attempt 2 of 3.
             The previous attempt was rejected and its changes were removed. Reason code: ${{ needs.verdict-1.outputs.reason }}
-            (no-changes: nothing was changed; no-tagged-test: no test with the tag was found;
+            (no-tagged-test: no test with the tag was found;
             base-missing: the test did not run or did not fail on production; passes-on-base: the test passed on
             production, so it does not show the problem; red-run-failed: the test run did not finish. Any other code is the reason given by the patch check,
             which also runs on the patch: it limits what a fix may touch and which files may hold the test.)
@@ -573,7 +573,7 @@ jobs:
 
   agent-3:
     needs: [guard, verdict-1, verdict-2]
-    if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.verdict-1.outputs.ok != 'true' && needs.verdict-2.outputs.ok != 'true' }}
+    if: ${{ !cancelled() && needs.guard.outputs.proceed == 'true' && needs.verdict-1.outputs.ok != 'true' && needs.verdict-2.outputs.ok != 'true' && needs.verdict-1.outputs.reason != 'no-changes' && needs.verdict-2.outputs.reason != 'no-changes' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -601,7 +601,7 @@ jobs:
           prompt: |
             You are fixing issue #${{ github.event.issue.number }} in ${{ github.repository }}. This is attempt 3 of 3.
             The previous attempt was rejected and its changes were removed. Reason code: ${{ needs.verdict-2.outputs.reason }}
-            (no-changes: nothing was changed; no-tagged-test: no test with the tag was found;
+            (no-tagged-test: no test with the tag was found;
             base-missing: the test did not run or did not fail on production; passes-on-base: the test passed on
             production, so it does not show the problem; red-run-failed: the test run did not finish. Any other code is the reason given by the patch check,
             which also runs on the patch: it limits what a fix may touch and which files may hold the test.)
@@ -821,7 +821,7 @@ jobs:
         id: pick
         run: |
           in="$RUNNER_TEMP/in"
-          winner=0; summary=""
+          winner=0; summary=""; terminal=""
           # The patch is applied to a scratch index (the work tree stays clean); the trusted no-fly check runs on the
           # exact NUL-separated list of changed files. Prints a reason code and fails when the patch must not win.
           prepare() {
@@ -845,8 +845,11 @@ jobs:
             fi
             reason=$(printf %s "$reason" | tr -cd 'a-z0-9-' | head -c 40)
             summary="${summary}attempt $n: ${reason:-unknown}; "
+            # An agent that changed nothing has given its answer: more attempts would only invent a different problem.
+            if [ "$reason" = "no-changes" ]; then terminal=no-changes; break; fi
           done
           echo "winner=$winner" >> "$GITHUB_OUTPUT"
+          echo "terminal=$terminal" >> "$GITHUB_OUTPUT"
           echo "summary=${summary%; }" >> "$GITHUB_OUTPUT"
 
       # Three failed attempts (or a crashed job): no PR, a human takes over.
@@ -854,9 +857,14 @@ jobs:
         if: steps.pick.outputs.winner == '0'
         env:
           SUMMARY: ${{ steps.pick.outputs.summary }}
+          TERMINAL: ${{ steps.pick.outputs.terminal }}
         run: |
           {
-            echo "The coding agent could not produce a test that fails on production, so no pull request was opened."
+            if [ "$TERMINAL" = "no-changes" ]; then
+              echo "The coding agent found nothing to change: it could not reproduce the problem or find a cause in the code, so no pull request was opened."
+            else
+              echo "The coding agent could not produce a test that fails on production, so no pull request was opened."
+            fi
             echo
             echo "Result per attempt: ${SUMMARY:-the agent jobs did not finish}"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
