@@ -30,6 +30,13 @@ flowchart TD
 - A weekly session: tell your agent "run WEEKLY.md" and it collects what is stuck and asks you the product questions, all at once. See [WEEKLY.md](WEEKLY.md).
 - Three weekly routines that open draft PRs or issues: dead code, duplicates and a security review. See [ROUTINES.md](ROUTINES.md).
 
+## See it working
+
+The kit was installed by a fresh coding agent, from the sentence above, into two throwaway apps. Each has one planted bug that a user reported through the widget:
+
+- [udd-accept-next](https://github.com/AgasiArgent/udd-accept-next) (Next.js + Supabase): [the report](https://github.com/AgasiArgent/udd-accept-next/issues/1), the agent's research, [the fix](https://github.com/AgasiArgent/udd-accept-next/pull/2), then "verified in production". [A report about a feature that works](https://github.com/AgasiArgent/udd-accept-next/issues/5) ends with the agent finding nothing to change and asking a human.
+- [udd-accept-vite](https://github.com/AgasiArgent/udd-accept-vite) (Vite + Express): [the report](https://github.com/AgasiArgent/udd-accept-vite/issues/1) and [the fix](https://github.com/AgasiArgent/udd-accept-vite/pull/2), plus [a pull request from the duplicates routine](https://github.com/AgasiArgent/udd-accept-vite/pull/3).
+
 ## Where it comes from
 
 I'm not a software engineer by training. I ran businesses and sales teams. Today I build, on my own and with coding agents, the ERP of a company of about 200 people. About 30 people send me feedback, and I am the only developer.
