@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { renderIssue } from "../../delivery/src/issueBody.ts";
+import { renderIssue, reporterLabel } from "../../delivery/src/issueBody.ts";
 import { checkNoFly, type NoFlyRules } from "./noFly.ts";
 import { research, type Model, type Payload, type RepoFiles, type Research } from "./research.ts";
 import type { Tracker } from "./tracker/types.ts";
@@ -59,7 +59,7 @@ export async function intakeOnce(db: pg.Pool, tracker: Tracker, repo: RepoFiles,
         const existing = await tracker.findOpenByMarker(marker);
         let key: string;
         if (existing) {
-          await tracker.comment(existing.id, `Another report of this problem: **FB-${id}** from \`${row.payload.user ?? "unknown"}\`.\n\n> ${row.payload.comment.replace(/@/g, "@\u200b").split("\n").join("\n> ")}`);
+          await tracker.comment(existing.id, `Another report of this problem: **FB-${id}** from \`${reporterLabel(row.payload)}\`.\n\n> ${row.payload.comment.replace(/@/g, "@\u200b").split("\n").join("\n> ")}`);
           key = existing.key;
           result.grouped++;
         } else {

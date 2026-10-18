@@ -1,55 +1,92 @@
-# User-driven development
+# Make your users your testers
 
-**How one person can build and run real software for real users: the users find the problems, coding agents fix them, and you answer the product questions.**
+An open-source kit for one person, or a small team, who builds an app with coding agents and has real users. Your users point at what is broken. An agent turns each report into an issue with research, you approve it, and the agent opens a draft PR with a test that fails on the live site. On the preview of the fix the same test passes. After you deploy, it runs against production and the reporter sees "verified".
 
-User feedback becomes a pull request — with a human gate and production verification.
+## Paste this into your coding agent
 
-A user points at a problem inside your running application and writes a comment. An agent researches it and files an issue. You approve it. A coding agent writes a failing scenario, fixes the code and opens a draft PR. After you merge and deploy, the scenario is re-run in production, and the user sees that their report shipped.
+> Read https://github.com/AgasiArgent/user-driven-development/blob/main/SETUP.md and set it up in this app.
 
-This repository describes that loop, the principles it needs, and what happened over fourteen weeks of building and running it in a real system. It is meant for one developer or a small team with its own application and a known group of users who send feedback — testers, internal staff, early customers. The users act as the testers, coding agents do the implementation, and you decide what gets built.
+The agent reads [SETUP.md](SETUP.md), asks you a few questions and installs the pieces. You review what it did.
 
-> The name is used elsewhere for "involving users in design". Here it means something narrower: the user's report is the input that starts a code change.
-
-## Why this exists
-
-I'm not a software engineer by training — I ran businesses and sales teams. Today I build, on my own and with coding agents, the ERP of a company of about 200 people. Its users report problems by pointing at them on the screen, and this loop is how those reports turn into fixes.
-
-The loop does not close everything on its own. Once a week I run an orchestrator agent over what it could not finish: it collects the open issues and asks me the product questions, I answer them, and it does the implementation. Users test the result in the app. Of the 529 issues sent to the coding agent so far, 467 (88%) are done; most of the rest are waiting in the queue.
-
-It did not work well at first. In July, about 30% of the fixes I sent for review came back for rework. In September it was about 6%. What changed in between are the rules in [concept.md](docs/concept.md) — almost every one of them was added after something broke, and the [case study](docs/case-study.md) shows what.
-
-This repository is **not** my production setup copied as is. I generalized it into a template with a small demo app, so expect rough edges. If you try it in your own app, I'd like to hear what broke and what you changed — [issues and pull requests are welcome](CONTRIBUTING.md). It may be most useful if, like me, you are not a full-time programmer but run real software with coding agents.
-
-## The loop
+## What you get
 
 ```mermaid
 flowchart TD
-  U[User pins feedback in the app] --> Q[(Durable queue)]
-  Q --> R[Agent researches: dedupe, code refs, uncertainty]
-  R --> T[Tracker issue: Triage]
-  T -->|human approves| A[Approved for fix]
-  A --> S[Red-first browser scenario]
-  S --> C[Cloud coding agent: draft PR, max 3 rounds]
-  C --> M[Human merges and deploys]
-  M --> V{Scenario passes in production?}
-  V -->|yes| IR[In Review: reporter sees status]
-  V -->|no| H[Needs a human]
+  U[User pins feedback in the app] --> Q[(Saved in your database, optional)]
+  Q --> I[GitHub issue labelled feedback]
+  I --> R[Agent researches and comments]
+  R -->|you add approved| F[Test must fail on the live site, then the fix, up to 3 attempts]
+  F --> P[Draft PR]
+  P --> W{Same test passes on the preview?}
+  W -->|no| H[needs-human]
+  W -->|yes, fix-ready| M[You merge and deploy]
+  M -->|checked in production| V{Same test passes in production?}
+  V -->|yes| D[Reporter sees verified]
+  V -->|no| H
 ```
 
-## Two levels
+- A **Feedback button** (a widget) for your app. The user clicks the broken element and writes what is wrong.
+- Four GitHub workflows: research on each report, a fix whose test must fail on the live site first and pass on the preview, and a check in production after you deploy.
+- A weekly session: tell your agent "run WEEKLY.md" and it collects what is stuck and asks you the product questions, all at once. See [WEEKLY.md](WEEKLY.md).
+- Three weekly routines that open draft PRs or issues: dead code, duplicates and a security review. See [ROUTINES.md](ROUTINES.md).
 
-| | Basic | Full |
-|---|---|---|
-| Feedback goes to | GitHub Issues | A queue table in your database |
-| Coding agent starts from | GitHub Actions | A dispatcher on your own server, polling Linear |
-| Coding agent | Claude Code (GitHub Action) | Codex Cloud |
-| Red-first scenario, rework rounds, production verification | No | Yes |
-| You need | A GitHub repository and a model API key | A server, a Linear account, a ChatGPT plan with Codex Cloud |
-| Status | Ready, off by default — [how to turn it on](docs/basic-level.md) | Reference implementation, tested against fakes — [how to run it](docs/full-level.md) |
+## See it working
 
-The basic level is meant to be set up from a fork. The full level is the loop from the [case study](docs/case-study.md); it needs infrastructure of your own.
+The kit was installed by a fresh coding agent, from the sentence above, into two throwaway apps. Each has one planted bug that a user reported through the widget:
 
-## Run the demo
+- [udd-accept-next](https://github.com/AgasiArgent/udd-accept-next) (Next.js + Supabase): [the report](https://github.com/AgasiArgent/udd-accept-next/issues/1), the agent's research, [the fix](https://github.com/AgasiArgent/udd-accept-next/pull/2), then "verified in production". [A report about a feature that works](https://github.com/AgasiArgent/udd-accept-next/issues/5) ends with the agent finding nothing to change and asking a human.
+- [udd-accept-vite](https://github.com/AgasiArgent/udd-accept-vite) (Vite + Express): [the report](https://github.com/AgasiArgent/udd-accept-vite/issues/1) and [the fix](https://github.com/AgasiArgent/udd-accept-vite/pull/2), plus [a pull request from the duplicates routine](https://github.com/AgasiArgent/udd-accept-vite/pull/3).
+
+## Where it comes from
+
+I'm not a software engineer by training. I ran businesses and sales teams. Today I build, on my own and with coding agents, the ERP of a company of about 200 people. About 30 people send me feedback, and I am the only developer.
+
+The loop did not work well at first. Of the fixes I sent for review, about 30% came back for rework in July, 13% in August and 6% in September. The rules below are what changed in between.
+
+- In numbers: the loop itself brought 121 of 479 issues to completion over 14 weeks, about one in four.
+- A weekly session handles the rest. 467 of 529 issues sent to the coding agent are done (88%).
+- At one point there were 12 days of downtime with no errors: the loop ran and produced nothing. That is why [rule 10](RULES.md) says to watch what the loop produces.
+
+## The rules
+
+[RULES.md](RULES.md) has all 15, each with the failure that led to it and the file in this kit that enforces it. The short version:
+
+1. A report is saved before anything else happens.
+2. Research comes before the issue, and agent text is cleaned.
+3. A person approves before any code is written.
+4. Some paths are never changed automatically.
+5. The test that reproduces the problem is written first. It must fail on the live site first and pass on the preview.
+6. Three attempts, then a person.
+7. Done means the test passes in production.
+8. One run per issue.
+9. The agent stops at a draft PR.
+10. Watch what the loop produces.
+11. The reporter sees the status.
+12. The automation acts as a bot.
+13. A routine has one open item and remembers a no.
+14. A security finding comes first, the fix after approval.
+15. Findings in a public repository stay local.
+
+## What it costs
+
+- **Model.** The workflows run on your Claude Pro or Max subscription through a token from `claude setup-token`. An API key also works. Nothing runs before you add `approved`, except the research on each new report and the weekly routines.
+- **GitHub Actions minutes.** GitHub Actions is free for public repositories on standard GitHub-hosted runners. For private repositories, GitHub's plan table lists 2,000 minutes per month on the Free plan, and the minutes used reset to zero at the start of each month. Larger runners are always charged, even in public repositories. Source: [About billing for GitHub Actions](https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions).
+
+## Limits
+
+- The red run on production is a signal, not proof. The test is written by the agent, so a test that fails on the live site can still miss the real problem. What you can rely on: a patch check (each fix has exactly one test tagged `@udd-<n>` and a change to app code), the same test passing on the preview of the fix, a draft PR, and your own review before you merge.
+- A red check proves the test fails on the live site, not that it is the reported bug. When the agent finds nothing to change, the loop stops and asks you (no retries). Review every draft PR against the report.
+- Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token. The preview check is a separate workflow and still runs.
+- The tests run against production and the preview under a test account. Give it no real data and no admin rights.
+- In a public repository every user report becomes a public issue. Users should not report secrets or personal data. The agent's research comment is cleaned, but it is public too. Security checks run only on your machine there.
+- **Preview deployments run the agent's code.** On Vercel every pushed `udd/fix-*` branch is built and deployed before you review it. The Preview environment must hold no production secrets: a separate Supabase project (or only the anon key with RLS on), no service-role key, no `UDD_GITHUB_TOKEN`, no payment or email keys scoped to Preview. [SETUP.md](SETUP.md) section 8b says how to check.
+- The `approved` label is the gate, but anyone holding a token with issue write access can add it too, including `UDD_GITHUB_TOKEN` on your app server. Keep that token on the server only, and rotate it if the server is compromised.
+- The agent's file access is limited to the repository checkout by permission rules (see the comment at the top of `udd-fix.yml`). That is a permission rule, not a sandbox.
+- Research runs automatically on every report, with no approval. `UDD_RESEARCH_DAILY_CAP` (default 20) limits how much of your subscription that can use per day.
+- The database step is optional. Without one, a report can be lost if GitHub is down.
+- The preview and production checks start from GitHub `deployment_status` events. Vercel now recommends its `repository_dispatch` events instead; switching to them is open work.
+
+## Try it first
 
 You need Docker.
 
@@ -59,57 +96,38 @@ cd user-driven-development
 docker compose up --build
 ```
 
-Open http://localhost:3100 — **Roomly**, a small meeting-room booking app with four [seeded bugs](docs/demo-bugs.md). Press **Feedback** in the bottom-right corner, click the element the problem is about, describe it and send. The report gets an ID like `FB-1` and appears under **My feedback** with the status `received`. It is stored in the `feedback_outbox` table, together with a screenshot and the page context.
-
-To deliver reports onward to GitHub Issues and a coding agent, see the [basic level](docs/basic-level.md).
+Open http://localhost:3100. It is **Roomly**, a small room-booking app with four [seeded bugs](docs/demo-bugs.md). Press **Feedback** in the bottom-right corner, click an element, describe the problem and send. The report gets an ID like `FB-1` and appears under **My feedback** with the status `received`.
 
 > The demo intake has no authentication and no rate limit. That is fine on localhost and wrong in production.
 
-## Add the widget to your app
+## Advanced: how I run it in production
 
-```html
-<script src="/widget.js" data-endpoint="/api/feedback" data-user="alice" defer></script>
-```
+The kit above is a smaller version of what runs in my own system. The full version has its own queue table, a dispatcher on a server, Linear and Codex Cloud.
 
-- `widget.js` is one file with no framework (about 290 KB, most of it the screenshot library). Build it with `npm ci && npm run build:widget`; it lands in `widget/dist/widget.js`.
-- `data-endpoint` is where reports are sent. Your backend accepts the body described in [`contracts/feedback-report.schema.json`](contracts/feedback-report.schema.json) and answers `201 {"id": "...", "status": "received"}`. The demo's implementation is [`demo/lib/feedback.ts`](demo/lib/feedback.ts).
-- `data-user` is optional and is passed through as-is.
-- Each report carries the comment, the pinned element (CSS selector, tag, text, position), a screenshot, and the page context: URL, window size, browser, the last 20 console errors and the last 20 failed requests (method, URL without query string, status — no bodies).
-- Add `data-feedback-mask` to anything that shows personal data: it is painted black on the screenshot. Password fields are always masked.
+- [Full level](docs/full-level.md): the reference implementation, tested against fakes.
+- [Case study](docs/case-study.md): four generations in one real system, with numbers.
+- [Threat model](docs/threat-model.md): feedback is untrusted input to an agent.
+- [Templates reference](docs/basic-level.md): what each file the agent installs does.
+- [Origin of the rules](docs/concept.md)
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
+| `SETUP.md`, `WEEKLY.md`, `ROUTINES.md` | Instructions your agent follows |
+| `RULES.md` | The playbook |
+| `templates/` | Workflows, scripts, routine prompts and a `CLAUDE.md` snippet that the agent copies into your app |
 | `widget/` | The feedback widget: TypeScript, no framework, built to one file |
-| `contracts/` | JSON Schema of a feedback report, shared by the widget and any backend |
-| `demo/` | Roomly: Next.js + Postgres demo app, the feedback intake, unit and end-to-end tests |
-| `delivery/` | Basic level: moves reports from the queue into GitHub Issues and mirrors their status back |
-| `.github/workflows/udd-fix.yml` | Basic level: approved issue → coding agent → no-fly check → draft PR |
-| `full/` | Full level: research, intake into Linear, dispatcher for Codex Cloud, production verification, liveness |
-| `.udd/`, `scripts/` | No-fly paths and keywords, research ignore list, and the check that enforces no-fly paths |
-| `docs/` | Concept, case study, threat model, seeded bugs, basic and full level |
+| `delivery/` | Moves saved reports into GitHub Issues and mirrors their status back |
+| `contracts/` | JSON Schema of a feedback report |
+| `demo/` | Roomly, a Next.js and Postgres demo app |
+| `full/` | The full level |
+| `.github/workflows/`, `.udd/` | This repository's own copy of the workflows and scripts, configured for the demo |
+| `docs/` | Reference, case study, threat model |
 
-## What it costs
+## Contributing
 
-Every report starts paid model runs: research on every report, and coding plus checks on every approved issue. Two things keep this bounded: nothing is coded before a human approves it, and each issue gets at most three rework rounds. Check current prices on the providers' pages: [Anthropic](https://www.anthropic.com/pricing), [OpenAI API](https://openai.com/api/pricing/), [ChatGPT plans](https://chatgpt.com/pricing).
-
-## The numbers
-
-In the system described in the case study, 121 of 479 dispatched issues were marked shipped during weeks 4–14 of the automated loop — about one in four, mostly before production verification and red-first scenarios were added. Most of the rest were finished later through a weekly orchestrator session: of 529 issues dispatched up to 5 October, 467 (88%) are done. Of the fixes sent to testers for review, the share returned for rework within 30 days fell from about 30% in July to 13% in August and 6% in September. The [case study](docs/case-study.md) shows where the rest went and what broke along the way.
-
-## Documents
-
-- [The loop and its principles](docs/concept.md) — twelve rules, most of them tied to a failure that made them necessary.
-- [Case study](docs/case-study.md) — four generations in one real system, with numbers.
-- [Threat model](docs/threat-model.md) — feedback is untrusted input to an agent.
-
-## Roadmap
-
-0. Concept, principles, case study — **done**.
-1. A demo application with a feedback widget (pin, comment, screenshot) — **done**.
-2. The basic level on GitHub Issues and Actions — **done** (off by default).
-3. The full level: queue, research, Linear, Codex Cloud, red-first scenarios, production verification — **done** (reference, not yet run against live services).
+Reports from other systems are the most useful contribution. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

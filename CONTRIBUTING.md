@@ -11,7 +11,8 @@ Thanks for looking. This project is a generalized version of a loop that runs in
 **Before a pull request**
 
 1. `docker compose up -d db`, then `npm ci`.
-2. `npm run test:unit && npm run test:scripts` must pass; for the demo, `npm run build -w demo && npm run e2e -w demo`.
-3. Keep files under about 300 lines and add a test that fails without your change.
+2. `npm run test:unit && npm run test:scripts` must pass. `test:scripts` runs the tests for the templates, the scripts and the docs (`scripts/test/*.test.mjs`). For the demo, also run `npm run build -w demo && npm run e2e -w demo`.
+3. The files in `.github/workflows/udd-*.yml` and `.udd/scripts/` are byte-identical copies of `templates/workflows/` and `templates/scripts/udd/`. Change the template, then copy it over; a test fails if they differ.
+4. Keep files under about 300 lines and add a test that fails without your change.
 
-The four bugs in the demo app are there on purpose (see [docs/demo-bugs.md](docs/demo-bugs.md)) — please don't fix them in this repository; they are what the loop is tested on.
+The four bugs in the demo app are there on purpose (see [docs/demo-bugs.md](docs/demo-bugs.md)). Please do not fix them in this repository; they are what the loop is tested on.

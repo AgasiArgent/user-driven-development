@@ -1,0 +1,405 @@
+# Weekly routines: dead code, duplicates, security. Off by default: set the repository
+# variable UDD_AGENT_ENABLED=true and the secret CLAUDE_CODE_OAUTH_TOKEN. See ROUTINES.md.
+#
+# The model token and project code never meet:
+#   meta             — reads whether the repository is private, and the run date
+#   audit            — `npm audit --json` (lockfile only, no install, no scripts); no secrets
+#   agent            — holds the model token; reads and edits files, runs NO project code. Its result is
+#                      uploaded first and its sha256 is recorded as a job output
+#   verify           — no secrets, no cache, read-only token: verifies the sha256, applies the patch to a
+#                      fresh checkout and runs the project tests (UDD_TEST_CMD)
+#   publish-pr       — verifies the sha256 again, applies the patch (draft PR); runs trusted script copies
+#   publish-security — verifies the sha256 again, opens ONE issue per run with a checklist
+# File-tool scope of the coding agent (https://code.claude.com/docs/en/permissions, "Read and Edit"): rules use
+# gitignore syntax; `//path` is an absolute path, `~/` the home directory, `./` the workspace. Only Read and Edit path
+# rules are consulted: Edit covers every tool that changes files (Write included), Read is applied to Glob and Grep, and
+# a Read deny rule also blocks Write/Edit there. A Write, Glob or Grep path rule is ignored (and warns), so none is used.
+# The agent may read and edit inside the workspace only; the process tree, system config, temp dirs (the runner temp
+# dir holds the .git tar) and dot-directories of the home directory are denied. This is a permission rule, not a sandbox.
+name: udd-routine
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: udd-routine
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    if: vars.UDD_AGENT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      private: ${{ steps.repo.outputs.private }}
+      date: ${{ steps.repo.outputs.date }}
+      routines: ${{ steps.repo.outputs.routines }}
+    steps:
+      # Asked from the API: a scheduled run has no reliable event payload to read this from
+      # (github.event.repository.private is not set on schedule events).
+      - id: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+          echo "private=$private" >> "$GITHUB_OUTPUT"
+          if [ "$private" = "true" ]; then echo 'routines=["dead-code","duplicates","security"]' >> "$GITHUB_OUTPUT"
+          else echo 'routines=["dead-code","duplicates"]' >> "$GITHUB_OUTPUT"; fi
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+  # No secrets here: `npm audit` reads only the lockfile and runs no package script.
+  audit:
+    needs: meta
+    if: needs.meta.outputs.private == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Dependency audit
+        run: |
+          mkdir -p "$RUNNER_TEMP/audit"
+          npm audit --json > "$RUNNER_TEMP/audit/udd-audit.json" || true
+          [ -s "$RUNNER_TEMP/audit/udd-audit.json" ] || echo '{"unavailable": true}' > "$RUNNER_TEMP/audit/udd-audit.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routine-audit
+          path: ${{ runner.temp }}/audit
+          if-no-files-found: error
+
+  agent:
+    needs: [meta, audit]
+    if: ${{ !cancelled() && needs.meta.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Rule 7.3: in a public repository the security leg is not in the matrix at all (its result would be discarded).
+        routine: ${{ fromJSON(needs.meta.outputs.routines) }}
+    # One output per routine: matrix legs must not overwrite each other's value.
+    outputs:
+      sha-dead-code: ${{ steps.save.outputs.sha-dead-code }}
+      sha-duplicates: ${{ steps.save.outputs.sha-duplicates }}
+      sha-security: ${{ steps.save.outputs.sha-security }}
+    env:
+      ROUTINE: ${{ matrix.routine }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Rule 7.2.1: at most one open PR or issue per routine. Rule 7.3: no security run on a public repository.
+      - name: Guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ needs.meta.outputs.private }}
+        run: |
+          open=$( { gh issue list --state open --label "routine:$ROUTINE" --json labels; gh pr list --state open --label "routine:$ROUTINE" --json labels; } \
+            | jq -s '[.[][] | {labels: [.labels[].name]}]')
+          run=$(jq -n --arg r "$ROUTINE" --argjson o "$open" '{routine: $r, openItems: $o}' | node .udd/scripts/routine-guard.mjs)
+          if [ "$ROUTINE" = "security" ] && [ "$PRIVATE" != "true" ]; then run=false; fi
+          # A leg without its prompt file is skipped, not failed.
+          if [ ! -f ".udd/routines/$ROUTINE.md" ]; then echo "::notice::.udd/routines/$ROUTINE.md is missing; skipping $ROUTINE"; run=false; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          # The whole .git as it is before the agent touches the tree; put back before git reads it again.
+          tar -C "$GITHUB_WORKSPACE" -cf "$RUNNER_TEMP/dotgit.tar" .git
+
+      # Input only: the audit ran in a job without secrets. The agent reads the file, nothing executes it.
+      - name: Dependency audit result
+        if: steps.guard.outputs.run == 'true' && matrix.routine == 'security'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: routine-audit
+          path: ${{ runner.temp }}/audit
+      - name: Place the audit result
+        if: steps.guard.outputs.run == 'true' && matrix.routine == 'security'
+        run: |
+          if [ -s "$RUNNER_TEMP/audit/udd-audit.json" ]; then cp "$RUNNER_TEMP/audit/udd-audit.json" udd-audit.json
+          else echo '{"unavailable": true}' > udd-audit.json; fi
+
+      - name: Load the routine prompt
+        if: steps.guard.outputs.run == 'true'
+        id: prompt
+        run: |
+          { echo "text<<UDD_EOF"; cat ".udd/routines/$ROUTINE.md"; echo "UDD_EOF"; } >> "$GITHUB_OUTPUT"
+
+      # No install before this step and no shell for the agent: nothing in the project runs next to the model token.
+      - name: Routine agent
+        if: steps.guard.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: |
+            --max-turns 40
+            --allowedTools "Read(./**),Edit(./**)"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(//tmp/**),Read(//home/runner/work/_temp/**),Read(~/.*),Read(~/.*/**),Edit(//proc/**),Edit(//sys/**),Edit(//etc/**),Edit(//tmp/**),Edit(//home/runner/work/_temp/**),Edit(~/.*),Edit(~/.*/**)"
+
+      # The first thing that runs after the agent: .git comes back from the tar and git runs without system or
+      # global config, hooks, fsmonitor or attributes file. `run` is rewritten here (the agent could have touched the
+      # old file) and the hash of the result is recorded as a job output, the channel the agent cannot reach.
+      - name: Save the result
+        id: save
+        env:
+          RUN: ${{ steps.guard.outputs.run }}
+        run: |
+          g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null -c core.quotePath=false "$@"; }
+          out="$RUNNER_TEMP/out"
+          rm -rf "$out"; mkdir -p "$out"
+          echo "$RUN" > "$out/run"
+          rm -rf .git && tar -C "$GITHUB_WORKSPACE" -xf "$RUNNER_TEMP/dotgit.tar"
+          if [ "$RUN" != "true" ]; then
+            result="$out/none"; : > "$result"
+          elif [ "$ROUTINE" = "security" ]; then
+            result="$out/findings.json"
+            if [ -f udd-findings.json ]; then cp udd-findings.json "$result"; else echo "[]" > "$result"; fi
+          else
+            result="$out/agent.patch"
+            g add -A
+            g diff --cached --binary --no-renames --no-ext-diff --no-textconv > "$result"
+          fi
+          sum=$(sha256sum "$result" | cut -d' ' -f1)
+          echo "$sum" > "$out/sha256"
+          echo "sha-$ROUTINE=$sum" >> "$GITHUB_OUTPUT"
+
+      # Nothing the agent wrote may carry the model secret out of this job.
+      - name: Refuse a result that contains a model secret
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          for S in "$CLAUDE_CODE_OAUTH_TOKEN" "$ANTHROPIC_API_KEY"; do
+            [ -n "$S" ] || continue
+            if grep -rqF -- "$S" "$RUNNER_TEMP/out"; then
+              echo "::error::the agent output contains a model secret; nothing is uploaded"
+              exit 1
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routine-${{ matrix.routine }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+
+  # No secrets, no cache, no stored credentials: project code runs here and nowhere else.
+  verify:
+    needs: agent
+    # A skipped or failed agent leg does not stop the others: each leg finds its own artifact (or nothing to do).
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        routine: [dead-code, duplicates]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: routine-${{ matrix.routine }}
+          path: ${{ runner.temp }}/in
+      - name: Verify and apply the patch
+        id: apply
+        env:
+          EXPECTED: ${{ needs.agent.outputs[format('sha-{0}', matrix.routine)] }}
+        run: |
+          in="$RUNNER_TEMP/in"
+          if [ ! -f "$in/run" ] || [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          git apply --index "$in/agent.patch"
+          echo "apply=true" >> "$GITHUB_OUTPUT"
+      - if: steps.apply.outputs.apply == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install
+        if: steps.apply.outputs.apply == 'true'
+        env:
+          UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
+        run: corepack enable && bash -c "$UDD_INSTALL_CMD"
+      - name: Project tests
+        if: steps.apply.outputs.apply == 'true'
+        id: tests
+        continue-on-error: true
+        env:
+          UDD_TEST_CMD: ${{ vars.UDD_TEST_CMD || 'npm test' }}
+        run: bash -c "$UDD_TEST_CMD"
+      - name: Record test outcome
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/outcome"
+          echo "${OUTCOME:-skipped}" > "$RUNNER_TEMP/outcome/tests"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routine-${{ matrix.routine }}-outcome
+          path: ${{ runner.temp }}/outcome
+          if-no-files-found: error
+
+  publish-pr:
+    needs: [agent, verify]
+    # Per leg: a leg without an agent result or a test outcome does nothing (or fails alone, see "Apply the change").
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' && needs.verify.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        routine: [dead-code, duplicates]
+    env:
+      ROUTINE: ${{ matrix.routine }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scripts and their list come from the base commit, before the patch is applied.
+      - name: Keep a trusted copy of the no-fly check
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp .udd/scripts/no-fly-check.mjs .udd/no-fly.txt "$RUNNER_TEMP/trusted/"
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: routine-${{ matrix.routine }}
+          path: ${{ runner.temp }}/in
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: routine-${{ matrix.routine }}-outcome
+          path: ${{ runner.temp }}/outcome
+
+      - name: Apply the change
+        id: apply
+        env:
+          EXPECTED: ${{ needs.agent.outputs[format('sha-{0}', matrix.routine)] }}
+        run: |
+          in="$RUNNER_TEMP/in"
+          if [ ! -f "$in/run" ] || [ "$(cat "$in/run")" != "true" ] || [ ! -s "$in/agent.patch" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A patch without a test outcome never becomes a PR: the verify leg did not finish.
+          [ -f "$RUNNER_TEMP/outcome/tests" ] || { echo "::error::no test outcome for $ROUTINE"; exit 1; }
+          actual=$(sha256sum "$in/agent.patch" | cut -d' ' -f1)
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::patch sha256 differs from the agent job output"; exit 1; }
+          git switch -c "udd/routine-$ROUTINE-$GITHUB_RUN_ID"
+          git apply --index "$in/agent.patch"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: No-fly zones
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          git -c core.quotePath=false diff --cached --name-only -z --no-renames > "$RUNNER_TEMP/changed.list"
+          node "$RUNNER_TEMP/trusted/no-fly-check.mjs" -z "$RUNNER_TEMP/trusted/no-fly.txt" < "$RUNNER_TEMP/changed.list"
+
+      # Principle 9: the agent stops at a draft PR; a human reviews and merges.
+      - name: Draft pull request
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          branch="udd/routine-$ROUTINE-$GITHUB_RUN_ID"
+          tests=$(head -c 20 "$RUNNER_TEMP/outcome/tests" | tr -d '\n')
+          case "$tests" in success|failure|cancelled|skipped) ;; *) tests=unknown;; esac
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Routine $ROUTINE (weekly, written by the coding agent)"
+          git push -q origin "$branch"
+          gh label create routine --force >/dev/null
+          gh label create "routine:$ROUTINE" --force >/dev/null
+          {
+            echo "Weekly routine **$ROUTINE**, written by the coding agent. Review it like any other change before merging."
+            echo
+            echo "Project tests (separate job, no secrets): **$tests**"
+            echo
+            echo "A pull request opened by the workflow token does not start the app's own CI: run it before merging."
+            echo
+            echo "If you reject a change, add its key to \`.udd/known-findings.json\` so it is not proposed again."
+          } > "$RUNNER_TEMP/pr.md"
+          gh pr create --draft --head "$branch" --title "Routine: $ROUTINE" --body-file "$RUNNER_TEMP/pr.md" \
+            --label routine --label "routine:$ROUTINE"
+
+  publish-security:
+    needs: [meta, agent]
+    # Review Focus 5: findings about a public repository never go into an issue or a PR.
+    if: ${{ !cancelled() && needs.agent.result != 'skipped' && needs.meta.outputs.private == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Nothing from the agent is applied here, so the scripts in this checkout are the base commit's.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: routine-security
+          path: ${{ runner.temp }}/in
+
+      - name: Open one issue with a checklist of new findings
+        env:
+          EXPECTED: ${{ needs.agent.outputs['sha-security'] }}
+          RUN_DATE: ${{ needs.meta.outputs.date }}
+        run: |
+          in="$RUNNER_TEMP/in"
+          { [ -f "$in/run" ] && [ "$(cat "$in/run")" = "true" ]; } || exit 0
+          actual=$(sha256sum "$in/findings.json" | cut -d' ' -f1)
+          { [ -n "$EXPECTED" ] && [ "$actual" = "$EXPECTED" ]; } || { echo "::error::findings sha256 differs from the agent job output"; exit 1; }
+          known='[]'; [ -f .udd/known-findings.json ] && known=$(cat .udd/known-findings.json)
+          new=$(jq -n --slurpfile f "$in/findings.json" --argjson k "$known" '{findings: $f[0], known: $k}' | node .udd/scripts/routine-guard.mjs filter)
+          [ "$(echo "$new" | jq 'length')" -gt 0 ] || exit 0
+          clean() { node .udd/scripts/sanitize.mjs; }
+          {
+            echo "New findings from the weekly security check. Nothing is fixed automatically: a person decides what happens next."
+            echo "To stop seeing a finding, add its key to \`.udd/known-findings.json\`."
+            echo
+            echo "$new" | jq -c '.[]' | head -20 | while read -r f; do
+              title=$(printf %s "$f" | jq -r '.title // "Finding"' | tr -d '\n' | clean | cut -c1-120)
+              file=$(printf %s "$f" | jq -r '.file // "?"' | tr -d '\n' | clean)
+              line=$(printf %s "$f" | jq -r '.line // 0' | tr -dc '0-9')
+              sev=$(printf %s "$f" | jq -r '.severity // "unknown"' | tr -d '\n' | clean)
+              key=$(printf %s "$f" | jq -r '.key' | tr -d '\n' | clean)
+              why=$(printf %s "$f" | jq -r '.explanation // ""' | tr '\n' ' ' | clean | head -c 1500)
+              # A secret in git is rotated, never "fixed" with a PR.
+              case "$key" in secret-*) title="Rotate this key: $file";; esac
+              echo "- [ ] **$title** (severity: $sev) in \`$file\`:$line, key \`$key\`"
+              echo "  $why"
+            done
+          } > "$RUNNER_TEMP/issue.md"
+          gh label create security --force >/dev/null
+          gh label create routine --force >/dev/null
+          gh label create routine:security --force >/dev/null
+          gh issue create --title "Security check $RUN_DATE" --body-file "$RUNNER_TEMP/issue.md" --label security --label routine --label routine:security

@@ -1,0 +1,267 @@
+# Second half of the fix loop: checks a fix on its preview deployment before a human merges it.
+# The agent wrote one browser test tagged @udd-<issue> (red on production, checked in udd-fix). Here that same
+# test must pass on the preview built from the fix branch. If it does, the issue gets fix-ready; if not, needs-human.
+# Runs after a successful NON-production deployment, or by hand with the issue input (the url input is optional: without
+# it the deployments of the pull request head commit are polled every 30 s for up to 20 minutes). No model is involved.
+#
+# Needs: a test account in the secrets UDD_TEST_USER_EMAIL and UDD_TEST_USER_PASSWORD, and the repository variable
+# UDD_PREVIEW_HOST_SUFFIX (e.g. ".vercel.app"): a preview address is accepted only if it is https and its host ends
+# with that suffix. A run by hand must also name a deployment of the pull request head that GitHub reports as successful.
+# Optional: the secret UDD_PREVIEW_BYPASS, the Vercel Deployment Protection bypass secret.
+#
+# Environment contract of the test step (the only step that sees the secrets):
+#   PLAYWRIGHT_BASE_URL     the preview address
+#   UDD_PREVIEW_HOST        the host of that address
+#   UDD_PREVIEW_BYPASS      the bypass secret (may be empty)
+#   UDD_TEST_USER_EMAIL, UDD_TEST_USER_PASSWORD
+# The bypass header must reach only the preview host. So the app's playwright.config (created once by SETUP) must NOT
+# put it in use.extraHTTPHeaders; it adds x-vercel-protection-bypass through a context.route / fixture only for requests
+# whose URL host equals UDD_PREVIEW_HOST, and sends nothing when UDD_PREVIEW_BYPASS is empty.
+#
+# Accepted risk: the test was written by the coding agent and runs against production (udd-fix) and against the preview
+# under the TEST account. Tests must touch only that account's own data.
+#
+# Jobs:
+#   find    — picks the udd/fix-<n> pull request of this repository that owns the deployed commit; runs no project code
+#   test    — the only job that runs project code: read-only token, no stored credentials, no cache, no write token
+#   verdict — decides and changes labels with scripts from the default branch; runs no project code
+name: udd-preview
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Address of the preview deployment to test. Optional; when empty, the successful non-production deployment of the pull request head commit is awaited (up to 20 minutes)
+        required: false
+        type: string
+      issue:
+        description: Number of the issue whose fix branch (udd/fix-<number>) is deployed there
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: udd-preview-${{ github.event.deployment.sha || inputs.issue || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  find:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment != 'Production' &&
+       github.event.deployment.environment != 'production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+      deployments: read
+    outputs:
+      issue: ${{ steps.pr.outputs.issue }}
+      sha: ${{ steps.pr.outputs.sha }}
+      url: ${{ steps.pr.outputs.url }}
+      re: ${{ steps.pr.outputs.re }}
+      host: ${{ steps.pr.outputs.host }}
+      reason: ${{ steps.pr.outputs.reason }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SUFFIX: ${{ vars.UDD_PREVIEW_HOST_SUFFIX }}
+      EVENT: ${{ github.event_name }}
+      DEPLOY_SHA: ${{ github.event.deployment.sha }}
+      ENV_URL: ${{ github.event.deployment_status.environment_url }}
+      TARGET_URL: ${{ github.event.deployment_status.target_url }}
+      INPUT_URL: ${{ inputs.url }}
+      INPUT_ISSUE: ${{ inputs.issue }}
+    steps:
+      # Scripts come from the default branch, never from the fix branch.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Find the fix pull request
+        id: pr
+        run: |
+          set -euo pipefail
+          skip() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; { echo "issue="; echo "reason=$1"; } >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            url="$INPUT_URL"; sha=""
+            case "$INPUT_ISSUE" in ''|*[!0-9]*) skip "The issue input must be a number." ;; esac
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY%%/*}:udd/fix-$INPUT_ISSUE")
+            if [ -z "$url" ]; then
+              # No address given: wait for a successful non-production deployment of the head commit of this repository's
+              # udd/fix-<n> pull request, every 30 s for up to 20 minutes. The host checks below still apply to its address.
+              poll_sha=$(echo "$prs" | jq -r --arg repo "$GITHUB_REPOSITORY" '
+                [.[] | select(.state == "open" and .head.repo.full_name == $repo and (.head.ref | test("^udd/fix-[0-9]+$")))] | .[0].head.sha // empty')
+              [ -n "$poll_sha" ] || skip "No open udd/fix-<number> pull request of this repository matches this issue."
+              for attempt in $(seq 1 40); do
+                for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$poll_sha" \
+                    --jq '.[] | select((.production_environment | not) and ((.environment // "") | ascii_downcase != "production")) | .id' 2>/dev/null || true); do
+                  url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+                    --jq '.[0] | select(.state == "success") | .environment_url // empty' 2>/dev/null || true)
+                  [ -n "$url" ] && break 2
+                done
+                [ "$attempt" -lt 40 ] && sleep 30
+              done
+              [ -n "$url" ] || skip "No successful preview deployment of the pull request head commit appeared within 20 minutes. Nothing was tested."
+            fi
+          else
+            url="${ENV_URL:-$TARGET_URL}"; sha="$DEPLOY_SHA"
+            prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls")
+          fi
+          case "$url" in https://*) ;; *) skip "No https address for the deployment." ;; esac
+          case "$url" in *[[:space:]]*) skip "The deployment address is not valid." ;; esac
+          case "$url" in *[@\\]*) skip "The deployment address is not valid." ;; esac
+          # The host is everything between https:// and the first / ? # or :port.
+          host_of() { local r="${1#https://}"; r="${r%%[/?#]*}"; r="${r%%:*}"; printf '%s' "${r,,}"; }
+          host=$(host_of "$url")
+          case "$host" in ''|*[!a-z0-9.-]*) skip "The deployment address is not valid." ;; esac
+          if [ -z "$SUFFIX" ]; then skip "Set the repository variable UDD_PREVIEW_HOST_SUFFIX (for example .vercel.app) to allow preview addresses. Nothing was tested."; fi
+          SUFFIX="${SUFFIX,,}"
+          case "$SUFFIX" in .?*) ;; *) skip "UDD_PREVIEW_HOST_SUFFIX must start with a dot, for example .vercel.app." ;; esac
+          case "$host" in *"$SUFFIX") ;; *) skip "The deployment host is not under the allowed suffix. Nothing was tested." ;; esac
+          # Only a fix branch of THIS repository (no forks), still open, and still at the deployed commit.
+          pr=$(echo "$prs" | jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$sha" '
+            [.[] | select(.state == "open"
+                          and .head.repo.full_name == $repo
+                          and (.head.ref | test("^udd/fix-[0-9]+$"))
+                          and ($sha == "" or .head.sha == $sha))] | .[0] // empty')
+          [ -n "$pr" ] || skip "No open udd/fix-<number> pull request of this repository matches this deployment."
+          issue=$(echo "$pr" | jq -r '.head.ref | sub("^udd/fix-"; "")')
+          head_sha=$(echo "$pr" | jq -r '.head.sha')
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            # A hand-typed address must belong to a deployment of this very commit that GitHub reports as successful.
+            matched=""
+            for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$head_sha" --jq '.[].id'); do
+              env_url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '.[0] | select(.state == "success") | .environment_url // empty')
+              case "$env_url" in https://*) ;; *) continue ;; esac
+              if [ "$(host_of "$env_url")" = "$host" ]; then matched=1; break; fi
+            done
+            [ -n "$matched" ] || skip "No successful deployment of the pull request head commit has this host. Nothing was tested."
+          fi
+          re=$(node .udd/scripts/red-first.mjs regex "@udd-$issue")
+          { echo "issue=$issue"; echo "sha=$head_sha"; echo "url=$url"; echo "host=$host"; echo "re=$re"; } >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: find
+    if: needs.find.outputs.issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_BASE_URL: ${{ needs.find.outputs.url }}
+      TAG_RE: ${{ needs.find.outputs.re }}
+      E2E_CMD: ${{ vars.UDD_E2E_CMD || 'npx playwright test' }}
+      UDD_INSTALL_CMD: ${{ vars.UDD_INSTALL_CMD || 'npm ci' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable && bash -c "$UDD_INSTALL_CMD" && npx playwright install --with-deps chromium
+
+      - name: Run the fix's test on the preview
+        env:
+          UDD_PREVIEW_HOST: ${{ needs.find.outputs.host }}
+          UDD_PREVIEW_BYPASS: ${{ secrets.UDD_PREVIEW_BYPASS }}
+          UDD_TEST_USER_EMAIL: ${{ secrets.UDD_TEST_USER_EMAIL }}
+          UDD_TEST_USER_PASSWORD: ${{ secrets.UDD_TEST_USER_PASSWORD }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          report="$RUNNER_TEMP/out/head.json"
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$report" bash -c "$E2E_CMD"' --grep "$0" --reporter=json' "$TAG_RE" > "$RUNNER_TEMP/e2e.log" 2>&1 || true
+          jq -e . "$report" > /dev/null 2>&1 || echo '{}' > "$report"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-head
+          path: ${{ runner.temp }}/out/head.json
+          if-no-files-found: error
+
+  # A run started by hand (or by udd-fix after it opened the pull request) that tested nothing must say so on the issue;
+  # otherwise the issue waits forever for a preview result. Deployment events for other branches stay silent.
+  skipped:
+    needs: find
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && needs.find.outputs.issue == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ inputs.issue }}
+      REASON: ${{ needs.find.outputs.reason || 'The find job failed before it could test the preview.' }}
+    steps:
+      - name: Tell the issue that the preview was not tested
+        run: |
+          set -euo pipefail
+          case "$ISSUE" in ''|*[!0-9]*) exit 0 ;; esac
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # REASON comes only from the fixed messages of the find job, never from deployment data.
+          printf 'The preview check did not run: %s\n\nRun udd-preview.yml by hand with the preview address, or check UDD_PREVIEW_HOST_SUFFIX. Run: %s\n' "$REASON" "$run_url" > "$RUNNER_TEMP/body.md"
+          gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/body.md"
+          gh issue edit "$ISSUE" --add-label needs-human --remove-label fix-ready,in-progress
+
+  verdict:
+    needs: [find, test]
+    if: ${{ !cancelled() && needs.find.outputs.issue != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The deployment event and the dispatch from udd-fix can test the same fix at the same time; the first verdict
+    # decides, the second sees the label and stops.
+    concurrency:
+      group: udd-preview-verdict-${{ needs.find.outputs.issue }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ needs.find.outputs.issue }}
+      URL: ${{ needs.find.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: preview-head
+          path: ${{ runner.temp }}/in
+
+      - name: Decide
+        run: |
+          set -uo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          report="$RUNNER_TEMP/in/head.json"
+          jq -e . "$report" > /dev/null 2>&1 || { mkdir -p "$RUNNER_TEMP/in"; echo '{}' > "$report"; }
+          # The address is untrusted text: never put it into a comment raw.
+          safe_url=$(printf '%s' "$URL" | node .udd/scripts/sanitize.mjs)
+          current=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name] | join(",")')
+          case ",$current," in *,fix-ready,*|*,needs-human,*)
+            echo "Issue #$ISSUE already has a preview result ($current); nothing to do." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+          esac
+          if reason=$(node .udd/scripts/red-first.mjs head "$report" "@udd-$ISSUE"); then
+            gh issue edit "$ISSUE" --add-label fix-ready --remove-label in-progress,needs-human
+            gh issue comment "$ISSUE" --body "The test for this fix passes on the preview ($safe_url). The draft pull request is ready for review. Run: $run_url"
+          else
+            reason="${reason:-unreadable-report}"
+            gh issue edit "$ISSUE" --add-label needs-human --remove-label fix-ready,in-progress
+            gh issue comment "$ISSUE" --body "The test for this fix did not pass on the preview ($safe_url), so a developer needs to look. Reason: \`$reason\` (no-tagged-test: the test did not run or is missing; fails-on-head: it ran and failed on the preview). Run: $run_url"
+          fi
