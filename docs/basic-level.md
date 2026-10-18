@@ -92,3 +92,7 @@ npm run deliver -w delivery -- --watch 60         # delivers and syncs every min
 - **Screenshots in public issues are public.** With `PUBLIC_BASE_URL` set, every issue links to `/api/feedback/FB-<n>/screenshot`, which has no authentication and uses sequential ids. In a public repository, leave `PUBLIC_BASE_URL` unset or put that route behind your app's login.
 - The agent has no shell, so it cannot run tests itself; the workflow runs them after it.
 - Vercel's GitHub environment name for production is not documented, and Netlify's `deployment_status` behaviour is unverified. `udd-verify.yml` can always be started by hand as a fallback.
+
+## Reference notes
+
+`templates/reference/` holds detail that SETUP.md points to: `vercel.md` (bypass secret, preview variables, Express on Vercel), `playwright.md` (global setup, lint ignores), `small-apps.md` (no database, no storage, one user) and `my-feedback.md` (the "My feedback" page).

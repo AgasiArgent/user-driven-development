@@ -44,12 +44,12 @@ test("SETUP.md names all 13 labels, all variables and all secrets", () => {
   }
 });
 
-test("SETUP.md asks the six questions of the spec (section 5.1)", () => {
+test("SETUP.md asks the seven questions (spec section 5.1 plus the production URL)", () => {
   const text = read("SETUP.md");
   const section = text.slice(text.indexOf("## 1."), text.indexOf("## 2."));
-  const questions = section.split("\n").filter((l) => /^[1-6]\. /.test(l));
-  assert.equal(questions.length, 6);
-  const topics = [/repository/i, /database/i, /screenshots/i, /test account/i, /deployed/i, /public or private/i];
+  const questions = section.split("\n").filter((l) => /^[1-7]\. /.test(l));
+  assert.equal(questions.length, 7);
+  const topics = [/repository/i, /database/i, /screenshots/i, /test account/i, /deployed/i, /public or private/i, /production (URL|address)/i];
   topics.forEach((re, i) => assert.match(questions[i], re, `question ${i + 1}`));
 });
 
@@ -333,4 +333,41 @@ test("preview check starts automatically after the PR and can run by hand withou
   assert.match(basic, /UDD_RESEARCH_DAILY_CAP/);
   assert.ok(!basic.includes("scripts/no-fly-check.mjs`"), "basic-level still lists the kit-root checker");
   assert.ok(!/`UDD_INSTALL_CMD`|npm ci/.test(read("templates/CLAUDE.md.snippet")) || true);
+});
+
+// --- Acceptance round 2026-10-18: setup contract fixes ---
+
+test("SETUP.md: the loop starts after the PR is merged; question 7 feeds UDD_PROD_URL", () => {
+  const text = read("SETUP.md");
+  assert.match(text, /open a pull request/i);
+  assert.match(text, /loop starts after (the )?merge/i);
+  assert.match(SETUP_SECTION(text, "## 1.", "## 2."), /UDD_PROD_URL/);
+});
+
+test("SETUP.md and the reference files carry the acceptance fixes", () => {
+  const setup = read("SETUP.md");
+  const ref = ["vercel", "playwright", "small-apps"].map((n) => read(`templates/reference/${n}.md`)).join("\n");
+  const all = setup + "\n" + ref;
+  for (const needle of [
+    "UDD_REPORTER_SECRET", "HMAC", "reporterId", "my-feedback.md",
+    "agent checks", "owner checks", "UDD_TEST_CMD", "npm run lint && npm run build",
+    "provide", "global-setup", "public/widget.js", "ESLint",
+    "protection-bypass", "gh secret set UDD_PREVIEW_BYPASS", "/v10/projects/", "deployment_status",
+    "optional", "api/_lib", "100 kB", "Feedback button", "after sign-in", "Preview must use separate",
+  ]) assert.ok(all.includes(needle), `SETUP.md or its reference files lack ${needle}`);
+  assert.ok(!/\buse\b\s*\)\s*=>|\}, use\)/.test(setup), "the fixture sketch still names a parameter `use`");
+  assert.ok(!setup.includes("Report a problem"), "SETUP.md still calls the button Report a problem");
+  for (const n of ["vercel", "playwright", "small-apps"]) assert.ok(lines(`templates/reference/${n}.md`) <= 300);
+  assert.ok(!/[\u2013\u2014]/.test(ref), "reference files have em or en dashes");
+});
+
+test("README: button is called Feedback, and Limits carry the acceptance lesson", () => {
+  const text = read("README.md");
+  assert.ok(!text.includes("Report a problem"));
+  assert.match(text, /Feedback button/);
+  const limits = text.slice(text.indexOf("## Limits"), text.indexOf("## Try it first"));
+  assert.match(limits, /does not prove|not that it is the reported bug/i);
+  assert.match(limits, /nothing to change/i);
+  assert.match(limits, /no retries/i);
+  assert.match(limits, /review every draft PR against the report/i);
 });

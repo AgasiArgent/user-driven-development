@@ -20,24 +20,27 @@ Other files: `ROUTINES.md` (weekly routines, optional), `WEEKLY.md` (the owner's
    `widget/`, `delivery/` or `demo/` are in `$KIT`.
    - Check: `ls "$KIT/templates/workflows"` lists five `udd-*.yml` files.
    - If it fails: ask the owner for network access or a copy of the kit.
-2. Work on a new branch of the app: `git switch -c udd-setup`. Do not push to the default branch.
+2. Work on a new branch of the app: `git switch -c udd-setup`, and open a pull request for the owner at the end.
+   Workflows run only from the default branch, so the loop starts after the owner merges that pull request. Push to
+   the default branch only if the owner says so in this conversation.
    - Check: `git branch --show-current` prints `udd-setup`.
 3. Make sure `gh` is signed in with admin rights on the repository.
    - Check: `gh auth status` succeeds and `gh repo view --json viewerPermission -q .viewerPermission` prints `ADMIN`.
    - If it fails: ask the owner to run `gh auth login`. Without admin rights you cannot set labels, variables or secrets; stop and say so.
 
-## 1. Ask six questions
+## 1. Ask seven questions
 
-Ask all six at once. State your guess for each, so the owner can just say "yes".
+Ask all seven at once. State your guess for each, so the owner can just say "yes".
 
 1. Which GitHub repository, and which package manager (npm, pnpm, yarn, bun)? Guess: `git remote get-url origin`, and the lockfile in the repository root (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`).
 2. Is there a database, and which (Supabase, Postgres, none)? Guess: look for `@supabase/supabase-js`, `pg`, `prisma` in `package.json`.
 3. Where do screenshots go? Default: the app's own storage, behind login.
-4. Is there a test account in production for the checks? It must hold no real data and no admin rights. If not, the fix and production checks stay off and the rest works.
+4. Is there a test account in production for the checks? It must hold no real data and no admin rights. If not, the fix and production checks stay off and the rest works. If the test user is the app's only user, read `templates/reference/small-apps.md` before going on.
 5. How is the app deployed (Vercel, Netlify, other)? It decides how `udd-preview.yml` and `udd-verify.yml` start (section 8a).
 6. Is the repository public or private? `gh repo view --json isPrivate -q .isPrivate`. It decides the security routine (`ROUTINES.md` section 4).
+7. What is the production URL? Guess: the repository homepage (`gh repo view --json homepageUrl -q .homepageUrl`) or the hosting project's production domain. It becomes `UDD_PROD_URL` (section 8).
 
-- Check: you have six answers. Write them down in your notes, not in a file in the repo.
+- Check: you have seven answers. Write them down in your notes, not in a file in the repo.
 - If an answer is "I don't know": use the default, say which one you took, and go on. The exception is the lockfile: with no lockfile in the repository, refuse to enable the loop (section 10), because the workflows install with a frozen lockfile. Ask the owner to commit one first.
 
 ## 2. Create the labels
@@ -52,25 +55,26 @@ The names are fixed. Colors come from `LABEL_COLORS` in `templates/scripts/udd/s
 
 ## 3. Add the widget
 
-The widget is a script that adds a "Report a problem" button. The user clicks the broken part of
+The widget is a script that adds a **Feedback** button (the label is fixed in `widget/src/ui.ts`; call it "the Feedback button" to the owner). The user clicks the broken part of
 the page and writes what is wrong. It sends: text, screenshot, CSS selector of the clicked
 element, page address, console errors, failed requests. Input fields are masked.
 
-1. Build the widget inside the cloned kit, not in the app:
+1. Build the widget inside the cloned kit, not in the app. Run it from the kit root; inside `widget/` it fails with a workspace error:
    `cd "$KIT" && npm ci -w widget && npm run build -w widget`. The output is `$KIT/widget/dist/widget.js`
    (one file). `@medv/finder` and `html2canvas-pro` are bundled into it at build time, so the app
    needs no widget dependency and no bundler step. Copy only that one file into the app's `public/`
    (or static) folder. Do not copy `widget/src/` into the app.
    - Check: `ls -l` on the copied `widget.js` shows a file of a few hundred KB.
-2. Load the script on every page for a signed-in user:
+2. Load the script on every page for a signed-in user, and only after sign-in:
    `<script src="/widget.js" data-endpoint="/api/feedback" defer></script>` (change the route name if
    the stack wants another). Do not set `data-user`: the user is never taken from the page (section 4, rule 1).
    - Check: open the app in a browser. The button shows on a page, and clicking an element highlights it.
    - If it fails: open the console. A warning `data-endpoint is missing` means the script tag lost its attribute.
 3. Hints by stack:
    - Next.js (App Router): put the script in `app/layout.tsx` with `next/script` (`strategy="afterInteractive"`), only when a user is signed in. Put the built file in `public/`.
-   - Vite + Express: build the widget to `dist` or `public/`, add the script tag to `index.html`, the script tag needs no user attribute.
+   - Vite + Express and other single-page apps: do not put the tag in `index.html`, which also serves the login page. Add the script from code after the sign-in call succeeds (create a `script` element with `src`, `data-endpoint`, `defer`). The widget has no unmount, so reload the page on sign-out.
    - Other: any page template that every signed-in page shares.
+4. Add `public/widget.js` and `.udd/` to the app's ESLint (or oxlint) ignores, or `npm run lint` fails on the minified bundle (`templates/reference/playwright.md`).
 
 ## 4. Add the intake route
 
@@ -81,11 +85,13 @@ Rules for the route (all are required):
 1. Only a signed-in user may call it. Return 401 otherwise. The user id comes from the server-side session, never from `data-user` or the request body (ignore any user field in the body). The widget sends a plain `fetch` with no custom headers, so the session must travel in a same-origin cookie. The widget has no hook for an auth header: if the app uses token auth, give the route cookie-based session access for this call.
 2. Rate limit per user (for example 10 reports per hour). Return 429 over the limit.
 3. Body limit 3 MB. Return 413 over it.
-4. Store the report in `feedback_reports` (section 4a) with status `received`. Store the screenshot in the storage from question 3, behind login. Never a public link.
+4. Store the report in `feedback_reports` (section 4a) with status `received`, written by the server with a service key, not with the user's session (a user-session write cannot give the owner a screenshot link). Store the screenshot in the storage from question 3, behind login. Never a public link. No database or no storage: `templates/reference/small-apps.md`.
 5. Create the issue with the GitHub REST API: `POST /repos/{owner}/{repo}/issues`, label `feedback`. The token is named `UDD_GITHUB_TOKEN`. It is a fine-grained token for this one repository only, with the permissions "Issues: Read and write" and "Metadata: Read". The owner creates it in GitHub, Settings, Developer settings, Fine-grained tokens, and enters it in the hosting provider's environment variables (server only). It never goes into code, a committed file, or a `NEXT_PUBLIC_*` or `VITE_*` variable.
 6. Build title and body with the rules of `renderIssue` in `delivery/src/issueBody.ts`: `&`, `<`, `>` escaped; a zero-width space after every `@`; the body cut to `MAX_BODY` (65,000 characters) with `> _(truncated)_`; the user's text quoted with `>`.
+   The issue never shows the reporter's email or name (a public repository would leak it). It gets an opaque `reporterId`: the HMAC-SHA256 of the user id with a server secret, `UDD_REPORTER_SECRET`, set in the app's hosting environment for Production only (the same rule as `UDD_GITHUB_TOKEN`). Pass it to `renderIssue` as `reporterId`.
 7. Answer `201` with JSON `{"id": "<report id>"}` as soon as the report is saved, even if the GitHub issue is still pending. The widget treats anything but `201` with an `id` as a failure. If GitHub fails, keep the row as `received` and retry on the next call to the route and when the "My feedback" page opens. Set `issue_number` when the retry succeeds.
-8. With no database (question 2): create the issue directly, then answer `201` with `{"id": "<issue number>"}`. If GitHub fails, answer an error status (502), not `201`, and tell the owner a report can be lost if GitHub is down.
+8. With no database (question 2): create the issue directly, then answer `201` with `{"id": "<issue number>"}`. If GitHub fails, answer an error status (502), not `201`, and tell the owner a report can be lost if GitHub is down. Section 4a and the retry check do not apply (`templates/reference/small-apps.md`).
+9. Express or another server on Vercel: raise the JSON body limit for this route (screenshots exceed the 100 kB default) and keep helper files outside `api/` or in `api/_lib/` (`templates/reference/vercel.md`, section 5).
 
 - Check: sign in, send a report from the widget. `gh issue list --label feedback` shows a new issue, its body has no raw `<` and no `@` followed directly by a letter.
 - Check: call the route without signing in. It answers 401.
@@ -113,6 +119,7 @@ A signed-in user sees their reports and the status of each.
 2. Statuses to show: Received, Looked into, Approved, In progress, Fix ready, Shipped,
    Verified in production, Waiting for the developer, Declined.
 3. Retry any row without an issue number when the page opens (section 4, rule 7).
+4. Read the issue with `cache: "no-store"` (or a revalidate of 10 seconds at most), or the first view after a change shows the old status. Find the row's issue by the stored `issue_number`, never by parsing the issue body. A reference implementation is `templates/reference/my-feedback.md`; use it.
    - Check: the page shows the report from section 4 as "Received". Add the label `researched` to its issue by hand, reload: "Looked into".
    - If it fails: the GitHub read needs the same token; the same `UDD_GITHUB_TOKEN` works here.
 
@@ -127,7 +134,7 @@ A signed-in user sees their reports and the status of each.
    paths an agent may not change alone). Add `e2e/fixtures.ts` (section 7). Read it, then add the app's own sensitive paths that it lacks.
 5. Routines are optional. Copy `templates/routines/*.md` to `.udd/routines/` only for the routines you want
    (`dead-code.md`, `duplicates.md`, `security.md`) and follow `ROUTINES.md`. A routine whose prompt is missing is skipped.
-   - Check: `node --check .udd/scripts/*.mjs` is silent; `ls .github/workflows` shows `udd-research.yml udd-fix.yml udd-preview.yml udd-verify.yml udd-routine.yml`; `actionlint .github/workflows/udd-*.yml` passes if `actionlint` is installed.
+   - Check: `node --check .udd/scripts/*.mjs` is silent; `ls .github/workflows` shows `udd-research.yml udd-fix.yml udd-preview.yml udd-verify.yml udd-routine.yml`; `actionlint` on the workflows is optional for you (CI runs it); skip it if it is not installed.
    - Check: `printf '.udd/x.ts\0' | node .udd/scripts/no-fly-check.mjs -z .udd/no-fly.txt` exits non-zero (a protected path is refused). Run it as `... ; echo "exit=$?"`: it must not print `exit=0`.
    - If it fails: do not edit the workflows to make a check pass. They call files by these exact paths; fix the path you copied to. If the self-check exits 0, `.udd/no-fly.txt` is empty or wrong; copy the template again.
 6. Tell the owner the loop needs the repository setting "Allow GitHub Actions to create and approve pull requests". Set it yourself:
@@ -169,10 +176,10 @@ export default defineConfig({
 import { test as base } from "@playwright/test";
 const { UDD_PREVIEW_HOST: host, UDD_PREVIEW_BYPASS: secret } = process.env;
 export const test = base.extend({
-  context: async ({ context }, use) => {
+  context: async ({ context }, provide) => {
     if (host && secret) await context.route((u) => u.host === host, (r) =>
       r.continue({ headers: { ...r.request().headers(), "x-vercel-protection-bypass": secret } }));
-    await use(context);
+    await provide(context);
   },
 });
 export { expect } from "@playwright/test";
@@ -180,7 +187,7 @@ export { expect } from "@playwright/test";
 
    `playwright.config.*` and the global setup are no-fly paths (`templates/no-fly.txt`). Add the line
    `e2e/fixtures.ts` to `.udd/no-fly.txt` too (section 6). The agent cannot change these files later,
-   so get them right now. Tell the owner that only a person edits them from here on.
+   so get them right now. Tell the owner that only a person edits them from here on. The global setup sketch (login), `testDir` and lint ignores are in `templates/reference/playwright.md`. The fixture parameter is named `provide`, not `use`, so the app's `react-hooks/rules-of-hooks` lint rule stays quiet.
 3. `UDD_E2E_CMD` (default `npx playwright test`) must accept extra arguments, because the
    workflows append `--grep` and `--reporter=json`. A wrapper script that ignores arguments breaks them.
 4. Add one smoke test `e2e/udd-smoke.spec.ts` that loads the home page. It has no `@udd-` tag, so it is never run as a fix check.
@@ -193,25 +200,27 @@ export { expect } from "@playwright/test";
 Repository variables you set yourself (`gh variable set NAME --body VALUE`):
 - `UDD_AGENT_ENABLED`: set `true` only at the very end (section 9).
 - `UDD_INSTALL_CMD`: the install command from question 1, always the frozen-lockfile form: `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable` or `npm install -g bun && bun install --frozen-lockfile` (corepack, which the workflows enable, covers pnpm and yarn but not bun). For pnpm and yarn, `package.json` must declare `"packageManager"` (for example `"pnpm@9.12.0"`; read the version with `pnpm --version`), otherwise corepack stops to ask and the install fails in CI. Add it if it is missing. The workflows run it with `bash -c`. Default `npm ci`; set it for every other manager.
-- `UDD_TEST_CMD`: the app's unit test command for that manager (default `npm test`; for example `pnpm test`, `yarn test`, `bun test`).
+- `UDD_TEST_CMD`: the app's unit test command for that manager (default `npm test`; for example `pnpm test`, `yarn test`, `bun test`). With no `test` script, use `npm run lint && npm run build` (the manager's equivalent).
 - `UDD_E2E_CMD`: default `npx playwright test`.
 - `UDD_TEST_GLOB`: which files count as tests (default `**/*.spec.ts,**/*.test.ts,e2e/**`).
-- `UDD_PROD_URL`: the production address, only if question 4 was yes. The fix workflow runs the new test against it and must see it fail; `udd-verify.yml` runs it there again after the deploy.
+- `UDD_PROD_URL`: the production address from question 7, only if question 4 was yes. The fix workflow runs the new test against it and must see it fail; `udd-verify.yml` runs it there again after the deploy.
 - `UDD_PREVIEW_HOST_SUFFIX`: which preview addresses `udd-preview.yml` may test. It must start with a dot; an address is accepted only if it is https and its host ends with this suffix. Vercel: `.vercel.app` (or the project's custom preview domain, with a leading dot). Other hosts: the suffix of their preview addresses, for example `.netlify.app`. Without it the preview check tests nothing and says so in the run summary.
 - `UDD_RESEARCH_DAILY_CAP`: how many issues the research workflow may look into per day, default 20. Research runs automatically on every new report, with no approval, so this cap is what limits how much of the owner's Claude subscription a flood of reports can use. Past the cap an issue is not researched and the run says so.
 
 Secrets the **owner** enters. Tell the owner the name, where to get it, and the command. You never see or print the value:
 - `CLAUDE_CODE_OAUTH_TOKEN`: run `claude setup-token` in their terminal (Claude Pro or Max), then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`. An API key in `ANTHROPIC_API_KEY` works instead; then set a monthly spend limit on it.
 - `UDD_TEST_USER_EMAIL` and `UDD_TEST_USER_PASSWORD`: the test account from question 4, set the same way.
-- `UDD_PREVIEW_BYPASS` (required on Vercel while Deployment Protection is on, which is the default for previews): in Vercel open Project, Settings, Deployment Protection, Protection Bypass for Automation, create a secret, then `gh secret set UDD_PREVIEW_BYPASS`. Without it every preview answers with Vercel's login page and the preview check fails.
-- `UDD_GITHUB_TOKEN` (section 4) goes into the app's own hosting environment variables, not into GitHub secrets and not into code.
+- `UDD_PREVIEW_BYPASS` (required on Vercel while Deployment Protection is on, which is the default for previews): **you can create it yourself.** `templates/reference/vercel.md` section 2 generates the secret with `vercel api` (Protection Bypass for Automation) and pipes it straight into `gh secret set UDD_PREVIEW_BYPASS`, never printed. Without it every preview answers with Vercel's login page and the preview check fails.
+- `UDD_GITHUB_TOKEN` (section 4) and `UDD_REPORTER_SECRET` (section 4, rule 6) go into the app's own hosting environment variables (Production only), not into GitHub secrets and not into code.
+
+Preview environment variables on Vercel: do not use `vercel env add NAME preview` (broken without a terminal); use the REST call in `templates/reference/vercel.md` section 3.
 
 ### 8a. How the preview check starts
 
 `udd-preview.yml` tests the fix branch `udd/fix-<n>` against its preview address. It starts
 automatically: `udd-fix.yml` runs `gh workflow run udd-preview.yml -f issue=<n>` right after it creates the
 draft PR, and Vercel's deployment events start it too.
-- Vercel sends those events only if Project, Settings, Git, "`deployment_status` Events" is on. On new projects it can be off. Check: push any branch and run `gh api repos/<owner>/<repo>/deployments --jq '.[0].environment'`; it must print `Preview`. If it prints nothing, turn the toggle on (or ask the owner to). Without it the preview and production checks start only by hand.
+- Vercel sends those events only if the `deployment_status` toggle is on, and new projects can have it off. Run the check in `templates/reference/vercel.md` section 1 (`gh api repos/<owner>/<repo>/deployments --jq '.[0].environment'` must print `Preview`) and turn the toggle on, or ask the owner, if it does not. Without it the preview and production checks start only by hand.
 - With no `url`, the workflow polls the GitHub deployments of the PR head commit (every 30 seconds, up to 20 minutes) until one succeeds in a non-production environment, and tests its address. The host must still end with `UDD_PREVIEW_HOST_SUFFIX`.
 - By hand (`workflow_dispatch`), with no URL: `gh workflow run udd-preview.yml -f issue=<n>`. If the host does not report deployments to GitHub, pass the address: `gh workflow run udd-preview.yml -f url=<preview address> -f issue=<n>`.
 - Production deployments start `udd-verify.yml` the same way, by hand: `gh workflow run udd-verify.yml -f url=<address>`.
@@ -235,7 +244,8 @@ agent's code runs in the Preview environment with whatever that environment hold
 the loop, the Preview environment must hold NO production secrets:
 - a separate Supabase project for Preview (or only the anon key with RLS on), never the production database;
 - no service-role key, no `UDD_GITHUB_TOKEN`, no payment or email keys scoped to Preview;
-- the test account exists in the preview database, with no real data and no admin rights.
+- the test account exists in the preview database, with no real data and no admin rights;
+- an app with one user (the test user is the real user): Preview must use separate credentials, its own session secret and login password (`templates/reference/small-apps.md`).
 
 How to check: in Vercel open Project, Settings, Environment Variables, and read the Environments
 column of every row. A secret that lists Preview (or "All Environments") is exposed; scope it to
@@ -252,25 +262,32 @@ overwrite what is there.
 
 ## 10. Self-check, then switch on
 
-Run each check. All six must pass.
+Split the checks by who can run them. You often hold no browser session and no GitHub token for the app,
+and then the second list belongs to the owner. Do not claim a check you did not run.
 
+**Agent checks now** (all must pass):
 1. Labels: 13 present (section 2).
-2. Widget to issue: a real report from the browser creates an issue with the label `feedback` (section 4).
-3. Escaping: a report containing `<img src=x onerror=1>` and `@someone` shows as text with no mention (read the issue body).
-4. "My feedback" shows the report and moves to "Looked into" when `researched` is added (section 5).
-5. Files: `.github/workflows/udd-*.yml`, `.udd/scripts/*.mjs` (seven files including `no-fly-check.mjs` and `patch-check.mjs`), `.udd/no-fly.txt` exist, a lockfile is committed, the no-fly self-check from section 6 exits non-zero, and `UDD_INSTALL_CMD` and `UDD_TEST_CMD` pass locally.
-6. No secret value is in `git diff` (`git diff --stat` and a search of the diff for `ghp_`, `sk-`, `github_pat_` finds nothing).
+2. Escaping and limits against the intake route, locally or with a fake GitHub: `<img src=x onerror=1>` and `@someone` come out as text with no mention; an unsigned call gives 401; a body over 3 MB gives 413.
+3. Files: `.github/workflows/udd-*.yml`, `.udd/scripts/*.mjs` (seven files including `no-fly-check.mjs` and `patch-check.mjs`), `.udd/no-fly.txt` exist, a lockfile is committed, the no-fly self-check from section 6 exits non-zero, and `UDD_INSTALL_CMD` and `UDD_TEST_CMD` pass locally.
+4. No secret value is in your diff: search for full token shapes (`ghp_[A-Za-z0-9]{20,}`, `github_pat_[A-Za-z0-9_]{20,}`, `sk-[A-Za-z0-9]{20,}`). Skip `.udd/scripts/sanitize.mjs` and `public/widget.js`, which contain the patterns as code.
+5. Section 8b is settled: Preview holds no production secret, or the owner has decided how (do not enable the loop on an open question).
 
-- Check: all six items above pass.
-- If one fails: go back to its section and use that section's "If it fails" line. Do not switch the loop on with a failing item.
+**Owner checks after the secrets are in** (give the owner this list; run them yourself only if you hold a signed-in browser and the token):
+1. Widget to issue: send a real report from the signed-in app; `gh issue list --label feedback` shows it, with the opaque reporter id and no email.
+2. "My feedback" shows the report, and moves to "Looked into" when `researched` is added (section 5).
+3. Status flip: add `approved` on a test issue and watch the labels move.
 
-Then: commit on `udd-setup` (`git add` only the files you created), set `UDD_AGENT_ENABLED=true`
-with `gh variable set UDD_AGENT_ENABLED --body true`, and tell the owner to open a pull request
-for the branch and merge it. Workflows only run from the default branch.
+- Check: the agent checks pass, and the owner list is in your final report.
+- If one fails: go back to its section and use that section's "If it fails" line. Do not switch the loop on with a failing agent check.
+
+Then: commit on `udd-setup` (`git add` only the files you created or changed), open a pull request for the
+owner (`gh pr create`), and tell the owner to run the owner checks and merge it. Workflows run only from the default
+branch, so the loop starts after the merge. Set `UDD_AGENT_ENABLED=true` with `gh variable set UDD_AGENT_ENABLED --body true`
+only when `CLAUDE_CODE_OAUTH_TOKEN` is listed and section 8b is done; otherwise leave it to the owner.
 
 Tell the owner two limits plainly:
 - Pull requests opened by the workflows use `GITHUB_TOKEN`, so the app's own CI does not run on them automatically (the preview check is a separate workflow and is not affected). Run CI by hand before merging, or configure a GitHub App token.
 - In a public repository every user report becomes a public issue. Users must not report secrets or personal data. The agent's research comment is sanitized but still public. Security checks run only locally there (`ROUTINES.md` section 4).
 
-Finish with a short report: what was installed, what the owner still has to do (secrets, merge,
+Finish with a short report: what was installed, which checks you ran and which are the owner's, what the owner still has to do (secrets, merge,
 deploy, the production test account), and the first thing to try: send a report from the app.

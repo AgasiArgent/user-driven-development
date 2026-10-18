@@ -25,7 +25,7 @@ flowchart TD
   V -->|no| H
 ```
 
-- A **Report a problem** widget for your app. The user clicks the broken element and writes what is wrong.
+- A **Feedback button** (a widget) for your app. The user clicks the broken element and writes what is wrong.
 - Four GitHub workflows: research on each report, a fix whose test must fail on the live site first and pass on the preview, and a check in production after you deploy.
 - A weekly session: tell your agent "run WEEKLY.md" and it collects what is stuck and asks you the product questions, all at once. See [WEEKLY.md](WEEKLY.md).
 - Three weekly routines that open draft PRs or issues: dead code, duplicates and a security review. See [ROUTINES.md](ROUTINES.md).
@@ -68,6 +68,7 @@ The loop did not work well at first. Of the fixes I sent for review, about 30% c
 ## Limits
 
 - The red run on production is a signal, not proof. The test is written by the agent, so a test that fails on the live site can still miss the real problem. What you can rely on: a patch check (each fix has exactly one test tagged `@udd-<n>` and a change to app code), the same test passing on the preview of the fix, a draft PR, and your own review before you merge.
+- A red check proves the test fails on the live site, not that it is the reported bug. When the agent finds nothing to change, the loop stops and asks you (no retries). Review every draft PR against the report.
 - Pull requests opened by the workflows use `GITHUB_TOKEN`, so your own CI does not run on them automatically. Run CI by hand before merging, or configure a GitHub App token. The preview check is a separate workflow and still runs.
 - The tests run against production and the preview under a test account. Give it no real data and no admin rights.
 - In a public repository every user report becomes a public issue. Users should not report secrets or personal data. The agent's research comment is cleaned, but it is public too. Security checks run only on your machine there.
